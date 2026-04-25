@@ -1,17 +1,20 @@
 import socket
+import json
+from datetime import datetime
 
-Server_IP = "192.168.1.5"
+Server_IP = "127.0.0.1"
 Port = 5000
 
 Client_Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 Client_Socket.connect((Server_IP, Port))
 
-File_Name = "test.txt"
-New_Content = "Hello From Other Computer 😎"
+Tx_Data = {
+    "Tx_Id": "TX777",
+    "Data": "Hello Blockchain 😎",
+    "Time": str(datetime.now())
+}
 
-Data = File_Name + "|||" + New_Content
-
-Client_Socket.send(Data.encode())
+Client_Socket.send(json.dumps(Tx_Data).encode())
 
 Response = Client_Socket.recv(1024).decode()
 print(Response)

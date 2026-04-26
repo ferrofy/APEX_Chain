@@ -10,35 +10,23 @@ def Init_Client_Folder():
     if not os.path.exists(Client_Folder):
         os.makedirs(Client_Folder)
 
-def Get_Local_IP_Base():
-    Hostname = socket.gethostname()
-    Local_IP = socket.gethostbyname(Hostname)
+def Get_Server_IP():
+    IP = input("Enter Server IP: ").strip()
+    return Format_IP(IP)
 
-    Parts = Local_IP.split(".")
-    Base_IP = ".".join(Parts[:3])
+def Format_IP(IP):
+    Parts = IP.split(".")
+    
+    if len(Parts) != 4:
+        print("Invalid IP Format ❌")
+        exit()
 
-    return Base_IP
+    for Part in Parts:
+        if not Part.isdigit() or not (0 <= int(Part) <= 255):
+            print("Invalid IP Range ❌")
+            exit()
 
-def Scan_For_Server():
-    Base_IP = Get_Local_IP_Base()
-
-    print(f"Scanning Network: {Base_IP}.0/24 🔍")
-
-    for i in range(1, 255):
-        IP = f"{Base_IP}.{i}"
-
-        try:
-            Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            Sock.settimeout(0.3)
-
-            Sock.connect((IP, Port))
-            print(f"Server Found At: {IP} ✅")
-            return IP
-
-        except:
-            continue
-
-    return None
+    return ".".join(Parts)
 
 def Create_Tx():
     return {
@@ -46,6 +34,11 @@ def Create_Tx():
         "Data": "Hello Blockchain 😎",
         "Time": str(datetime.now())
     }
+
+def Connect_To_Server(Server_IP):
+    Client_Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    Client_Socket.connect((Server_IP, Port))
+    return Client_Socket
 
 def Send_Data(Client_Socket, Data):
     Client_Socket.send(json.dumps(Data).encode())
@@ -58,17 +51,15 @@ def Save_File(File_Name, Content):
     with open(File_Path, "w") as f:
         f.write(Content)
 
+def Close_Connection(Client_Socket):
+    Client_Socket.close()
+
 def Start_Client():
     Init_Client_Folder()
 
-    Server_IP = Scan_For_Server()
+    Server_IP = Get_Server_IP()
 
-    if Server_IP is None:
-        print("Server Not Found ❌")
-        return
-
-    Client_Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    Client_Socket.connect((Server_IP, Port))
+    Client_Socket = Connect_To_Server(Server_IP)
 
     Tx_Data = Create_Tx()
 
@@ -80,6 +71,6 @@ def Start_Client():
 
     Save_File(Response["File_Name"], Response["File_Content"])
 
-    Client_Socket.close()
+    Close_Connection(Client_Socket)
 
 Start_Client()

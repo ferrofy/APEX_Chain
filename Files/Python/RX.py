@@ -1,181 +1,194 @@
-import socket
-import os
-import threading
-import time
-import json
-import hashlib
+import socket, threading, time, json, os, hashlib
+from datetime import datetime
 
-Port = 5000
-Folder = "Blocks"
+PORT   = 5000
+FOLDER = "Blocks"
+HS_SRV = "FerroFy_SRV"
+HS_CLI = "FerroFy_CLI"
 
-def Init_Folder():
-    if not os.path.exists(Folder):
-        os.makedirs(Folder)
+Chain = []; Chain_Lock = threading.Lock()
+Peers = []; Peers_Lock = threading.Lock()
 
-def SHA256(Text):
-    return hashlib.sha256(Text.encode()).hexdigest()
+def SHA256(T):
+    return hashlib.sha256(T.encode()).hexdigest()
 
-def Get_Local_Info():
-    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        s.connect(("8.8.8.8", 80))
-        IP = s.getsockname()[0]
-    except:
-        IP = "127.0.0.1"
-    finally:
-        s.close()
-    Prefix = ".".join(IP.split(".")[:-1]) + "."
-    return IP, Prefix
-
-def Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash):
-    Raw = f"{Index}{Timestamp}{json.dumps(Data, sort_keys=True)}{Previous_Hash}"
+def Block_Hash(B):
+    Raw = f"{B['Index']}{B['Timestamp']}{json.dumps(B['Data'], sort_keys=True)}{B['Previous_Hash']}"
     return SHA256(Raw)
 
-def Validate_Block(Block, Previous_Block):
-    Expected_Index = Previous_Block["Index"] + 1
-    if Block["Index"] != Expected_Index:
-        return False, f"Index Mismatch: Expected {Expected_Index}, Got {Block['Index']}"
+def Validate_Chain(C):
+    Bad = []
+    for i, B in enumerate(C):
+        if Block_Hash(B) != B["Hash"]: Bad.append(i); continue
+        if i > 0 and B["Previous_Hash"] != C[i-1]["Hash"]: Bad.append(i)
+    return Bad
 
-    if Block["Previous_Hash"] != Previous_Block["Hash"]:
-        return False, "Previous Hash Mismatch"
+def Load_Chain():
+    C = []
+    if not os.path.exists(FOLDER): return C
+    for F in os.listdir(FOLDER):
+        if F.endswith(".json"):
+            try:
+                with open(os.path.join(FOLDER, F)) as Fh: C.append(json.load(Fh))
+            except: pass
+    C.sort(key=lambda B: B["Index"]); return C
 
-    Recomputed = Compute_Block_Hash(
-        Block["Index"], Block["Timestamp"], Block["Data"], Block["Previous_Hash"]
-    )
-    if Recomputed != Block["Hash"]:
-        return False, "Block Hash Invalid"
+def Save_Block(B):
+    os.makedirs(FOLDER, exist_ok=True)
+    with open(os.path.join(FOLDER, f"{B['Index']}.json"), "w") as F:
+        json.dump(B, F, indent=4)
 
-    return True, "Valid"
+def Get_Local_Info():
+    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try: S.connect(("8.8.8.8",80)); IP = S.getsockname()[0]
+    except: IP = "127.0.0.1"
+    finally: S.close()
+    return IP, ".".join(IP.split(".")[:-1])+"."
 
-def Save_Block(Block):
-    File_Name = f"{Block['Index']}.json"
-    Path = os.path.join(Folder, File_Name)
-    with open(Path, "w") as F:
-        json.dump(Block, F, indent=4)
-    return File_Name
+def Send_Msg(Sock, Lock, Msg):
+    P = json.dumps(Msg).encode()
+    with Lock: Sock.sendall(len(P).to_bytes(4,"big") + P)
 
-def Recv_Length_Prefixed(Sock):
-    Header = b""
-    while len(Header) < 4:
-        Chunk = Sock.recv(4 - len(Header))
-        if not Chunk:
-            return None
-        Header += Chunk
+def Recv_Msg(Sock):
+    H = b""
+    while len(H)<4:
+        C = Sock.recv(4-len(H))
+        if not C: return None
+        H += C
+    N = int.from_bytes(H,"big"); D = b""
+    while len(D)<N:
+        C = Sock.recv(min(8192, N-len(D)))
+        if not C: return None
+        D += C
+    return json.loads(D.decode())
 
-    Length = int.from_bytes(Header, byteorder="big")
+def Add_Peer(Sock, IP):
+    P = {"IP": IP, "Sock": Sock, "Lock": threading.Lock(), "Pending": {}, "PLock": threading.Lock()}
+    with Peers_Lock: Peers.append(P)
+    print(f"[Peer Added] {IP}")
+    threading.Thread(target=Peer_Reader, args=(P,), daemon=True).start()
+    return P
 
-    Data = b""
-    while len(Data) < Length:
-        Chunk = Sock.recv(min(8192, Length - len(Data)))
-        if not Chunk:
-            return None
-        Data += Chunk
-
-    return Data
-
-def Receive_Loop(Sock, IP, Chain):
+def Peer_Reader(P):
     while True:
         try:
-            Raw = Recv_Length_Prefixed(Sock)
-            if Raw is None:
-                print(f"[Disconnected] Server {IP} Closed Connection")
-                break
+            M = Recv_Msg(P["Sock"])
+            if not M: break
+            T = M.get("Type")
+            if T == "Block":
+                Ingest_Block(M["Data"])
+            elif T == "Block_Response":
+                with P["PLock"]:
+                    E = P["Pending"].get(M["Index"])
+                    if E: E["Data"] = M["Block"]; E["Ev"].set()
+        except: break
+    with Peers_Lock:
+        if P in Peers: Peers.remove(P)
+    print(f"[Disconnected] Peer {P['IP']}")
 
-            Block = json.loads(Raw.decode())
+def Ingest_Block(B):
+    with Chain_Lock:
+        if any(x["Index"]==B["Index"] for x in Chain): return
+        Is_Valid = (Block_Hash(B)==B["Hash"] and
+                    (not Chain or (B["Index"]==Chain[-1]["Index"]+1 and B["Previous_Hash"]==Chain[-1]["Hash"])))
+    if Is_Valid:
+        with Chain_Lock: Chain.append(B)
+        Save_Block(B)
+        print(f"[Saved] {B['Index']}.json | Hash: {B['Hash'][:16]}...")
+    else:
+        print(f"[Invalid] Block {B['Index']} — Requesting Repair From Peers")
+        threading.Thread(target=Repair_Block, args=(B["Index"],), daemon=True).start()
 
-            if len(Chain) == 0:
-                Chain.append(Block)
-                File_Name = Save_Block(Block)
-                print(f"[Received] {File_Name} | Hash: {Block['Hash'][:16]}... [Root Block]")
-            else:
-                Valid, Reason = Validate_Block(Block, Chain[-1])
-                if Valid:
-                    Chain.append(Block)
-                    File_Name = Save_Block(Block)
-                    print(f"[Received & Verified] {File_Name} | Hash: {Block['Hash'][:16]}...")
-                else:
-                    print(f"[Rejected] Block {Block['Index']} From {IP} | Reason: {Reason}")
+def Repair_Block(Idx):
+    with Peers_Lock: Active = list(Peers)
+    if not Active: print(f"[Repair] Block {Idx}: No Peers Available"); return
+    print(f"[Repair] Block {Idx} — Querying {len(Active)} Peer(s)...")
+    Votes = {}
+    for P in Active:
+        Ev = threading.Event(); Entry = {"Ev": Ev, "Data": None}
+        with P["PLock"]: P["Pending"][Idx] = Entry
+        try: Send_Msg(P["Sock"], P["Lock"], {"Type":"Request_Block","Index":Idx})
+        except: continue
+        Ev.wait(timeout=5.0)
+        with P["PLock"]: P["Pending"].pop(Idx, None)
+        if Entry["Data"]:
+            K = json.dumps(Entry["Data"], sort_keys=True)
+            Votes[K] = Votes.get(K, 0) + 1
+    if not Votes: print(f"[Repair] Block {Idx}: No Responses"); return
+    Best = max(Votes, key=Votes.get)
+    if Votes[Best] / len(Active) >= 0.5:
+        W = json.loads(Best)
+        with Chain_Lock:
+            New = [x for x in Chain if x["Index"]!=Idx] + [W]
+            New.sort(key=lambda b: b["Index"])
+            Chain.clear(); Chain.extend(New)
+        Save_Block(W)
+        print(f"[Repaired] Block {Idx} — {Votes[Best]}/{len(Active)} Majority")
+    else:
+        print(f"[Repair] Block {Idx}: No 50% Majority — Keeping Local")
 
-        except Exception as E:
-            print(f"[Error] Connection Lost To {IP} | {E}")
-            break
+def Verify_And_Repair():
+    with Chain_Lock: Bad = Validate_Chain(Chain)
+    if not Bad: print("[Verify] All Blocks Valid ✓"); return
+    print(f"[Verify] Bad Indices: {Bad} — Requesting From Peers")
+    for Idx in Bad:
+        threading.Thread(target=Repair_Block, args=(Idx,), daemon=True).start()
 
-def Scan_And_Connect():
+def Connect_To(IP):
+    try:
+        S = socket.socket(); S.settimeout(3.0); S.connect((IP, PORT))
+        if S.recv(64).decode() != HS_SRV: S.close(); return False
+        S.send(HS_CLI.encode()); S.settimeout(None)
+        P = Add_Peer(S, IP)
+        return True
+    except: return False
+
+def Scan_And_Connect(My_IP, Prefix):
+    Found = []; Lk = threading.Lock()
+    def Try(IP):
+        try:
+            S = socket.socket(); S.settimeout(0.3); S.connect((IP, PORT)); S.close()
+            with Lk: Found.append(IP)
+        except: pass
+    Ths = []
+    for i in range(1, 255):
+        IP = f"{Prefix}{i}"
+        if IP == My_IP: continue
+        T = threading.Thread(target=Try, args=(IP,), daemon=True); Ths.append(T); T.start()
+    for T in Ths: T.join()
+    return Found
+
+def Start_RX():
+    global Chain
+    os.makedirs(FOLDER, exist_ok=True)
     My_IP, Prefix = Get_Local_Info()
-    Sockets = []
-    Lock = threading.Lock()
-
-    def Try_Connect(IP):
-        try:
-            S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            S.settimeout(0.2)
-            S.connect((IP, Port))
-
-            S.settimeout(2.0)
-
-            Server_Greeting = S.recv(1024).decode()
-            if Server_Greeting != "Mine_RX":
-                S.close()
-                return
-
-            S.send("Mine_TX".encode())
-
-            S.settimeout(None)
-
-            with Lock:
-                Sockets.append((IP, S))
-                print(f"[Verified & Connected] {IP}")
-        except:
-            pass
-
-    print("[Scanning] 15-Second Discovery Window...")
-    Start_Time = time.time()
-
-    while time.time() - Start_Time < 15:
-        Threads = []
-        for i in range(1, 255):
-            IP = f"{Prefix}{i}"
-
-            if IP == My_IP or IP == "127.0.0.1":
-                continue
-
-            T = threading.Thread(target=Try_Connect, args=(IP,))
-            Threads.append(T)
-            T.start()
-
-        for T in Threads:
-            T.join()
-
-        if len(Sockets) > 0:
-            break
-
-        time.sleep(0.5)
-
-    return Sockets
-
-def Start_Client():
-    Init_Folder()
-    Chain = []
-
+    print(f"[RX Node] IP: {My_IP}")
+    Chain = Load_Chain()
+    if Chain: print(f"[Loaded] {len(Chain)} Block(s) From Disk")
+    else: print("[Empty] No Local Blocks")
     while True:
-        Connections = Scan_And_Connect()
-
-        if len(Connections) >= 1:
-            print(f"[Success] Established {len(Connections)} Verified Connection(s).")
-
-            for IP, Sock in Connections:
-                T = threading.Thread(target=Receive_Loop, args=(Sock, IP, Chain), daemon=True)
-                T.start()
-
-            for IP, Sock in Connections:
-                pass
-
-            while threading.active_count() > 1:
-                time.sleep(1)
-
-            break
+        print("[Scanning] Looking For TX Nodes...")
+        Found = Scan_And_Connect(My_IP, Prefix)
+        if Found:
+            print(f"[Found] {len(Found)} Node(s) On Network")
+            Connected = 0
+            for IP in Found:
+                if Connect_To(IP): Connected += 1
+            if Connected:
+                print(f"[Connected] {Connected} Node(s) Verified")
+                print("[Verifying] Checking Local Chain...")
+                time.sleep(2.0)
+                Verify_And_Repair()
+                print("[Running] Receiving Blocks...")
+                while True:
+                    time.sleep(5)
+                    with Peers_Lock: Alive = len(Peers)
+                    if Alive == 0: print("[Lost] All Peers Disconnected — Rescanning..."); break
+            else:
+                print("[Retry] No Verified Connections — Sleeping 60s...")
+                time.sleep(60)
         else:
-            print("[Timeout] No Verified Servers Found. Sleeping 60 Seconds...")
+            print("[Timeout] No TX Nodes Found — Sleeping 60s...")
             time.sleep(60)
 
-Start_Client()
+Start_RX()

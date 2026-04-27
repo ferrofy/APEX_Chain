@@ -55,7 +55,7 @@ def Start_Server():
     Server_Socket.bind((Host, Port))
     Server_Socket.listen(5)
 
-    print(f"[SERVER RUNNING] IP: {Get_Local_IP()} PORT: {Port}")
+    print(f"[SERVER RUNNING] Your IP: {Get_Local_IP()} PORT: {Port} \nEnter Your Server IP:" , end=" ")
 
     while True:
         Client_Socket, Addr = Server_Socket.accept()

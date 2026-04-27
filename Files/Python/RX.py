@@ -10,7 +10,7 @@ def Init_Folder():
         os.makedirs(Folder)
 
 def Get_Server_IP():
-    return input("Enter Server IP: ").strip()
+    return input().strip()
 
 def Connect(Server_IP):
     Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

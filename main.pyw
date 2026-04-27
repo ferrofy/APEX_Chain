@@ -1,6 +1,6 @@
 import tkinter as tk
 from tkinter import ttk
-import socket, threading, time, json, os, hashlib, sys, queue
+import socket, threading, time, json, os, hashlib, queue
 from datetime import datetime
 
 PORT   = 5000

@@ -5,32 +5,41 @@ import threading
 import time
 import json
 import hashlib
-import collections
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-Port        = 5000
+Host     = "0.0.0.0"
+Port     = 5000
+Folder   = "Blocks"
+BANNER_W = 60
+
 Handshake_A = "Mine_RX"
 Handshake_B = "Mine_TX"
-BANNER_W    = 60
-Folder      = "Blocks"
 
-Chain       = []
-Chain_Lock  = threading.Lock()
+Chain      = []
+Chain_Lock = threading.Lock()
 
 def Banner(Text, Char="="):
     print(Char * BANNER_W)
     print(f"  {Text}")
     print(Char * BANNER_W)
 
+def Get_Local_IP():
+    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        S.connect(("8.8.8.8", 80))
+        IP = S.getsockname()[0]
+    except Exception:
+        IP = "127.0.0.1"
+    finally:
+        S.close()
+    return IP
+
 def SHA256(Text):
     return hashlib.sha256(Text.encode("utf-8")).hexdigest()
-
-def SHA256_Bytes(Data):
-    return hashlib.sha256(Data).hexdigest()
 
 def SHA256_File(Path):
     with open(Path, "rb") as F:
@@ -47,75 +56,7 @@ def Save_Block(Block):
         json.dump(Block, F, indent=4)
     return Path
 
-def Load_All_Blocks():
-    Blocks = []
-    if not os.path.exists(Folder):
-        return Blocks
-    for File in sorted(os.listdir(Folder)):
-        if File.endswith(".json"):
-            try:
-                with open(os.path.join(Folder, File), "r") as F:
-                    Blocks.append(json.load(F))
-            except:
-                pass
-    Blocks.sort(key=lambda B: B["Block"])
-    return Blocks
-
-def Verify_Full_Chain(Verbose=False):
-    Blocks  = Load_All_Blocks()
-    Valid   = []
-    Corrupt = []
-
-    for I, Block in enumerate(Blocks):
-        if I == 0:
-            Ok = (
-                Block.get("Block") == 0 and
-                Block.get("Hash") == "0" * 64 and
-                Block.get("Prev_Hash", "") in ("", "0" * 64)
-            )
-            if Ok:
-                Valid.append(Block)
-                if Verbose:
-                    print(f"  Block {Block['Block']:>4} | Hash: {Block['Hash'][:16]}... | Genesis: OK")
-            else:
-                Corrupt.append(Block)
-                if Verbose:
-                    print(f"  Block {Block['Block']:>4} | Genesis: INVALID")
-        else:
-            Prev = Blocks[I - 1]
-            Recomputed = Calculate_Hash(Block)
-            Link_Ok    = (Block.get("Prev_Hash") == Prev.get("Hash"))
-            Hash_Ok    = (Recomputed == Block.get("Hash"))
-            if Link_Ok and Hash_Ok:
-                Valid.append(Block)
-                if Verbose:
-                    print(f"  Block {Block['Block']:>4} | Hash: {Block['Hash'][:16]}... | Chain Link: OK")
-            else:
-                Corrupt.append(Block)
-                if Verbose:
-                    if not Link_Ok:
-                        print(f"  Block {Block['Block']:>4} | Chain Link: BROKEN (Prev_Hash Mismatch)")
-                    else:
-                        print(f"  Block {Block['Block']:>4} | Hash: INVALID (Tampered)")
-
-    return Valid, Corrupt
-
-def Get_Local_Info():
-    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        S.connect(("8.8.8.8", 80))
-        IP = S.getsockname()[0]
-    except Exception:
-        IP = "127.0.0.1"
-    finally:
-        S.close()
-    Prefix = ".".join(IP.split(".")[:-1]) + "."
-    return IP, Prefix
-
-def Send_LP(Sock, Data_Bytes):
-    Sock.sendall(len(Data_Bytes).to_bytes(4, "big") + Data_Bytes)
-
-def Recv_LP(Sock):
+def Recv_Length_Prefixed(Sock):
     Header = b""
     while len(Header) < 4:
         Chunk = Sock.recv(4 - len(Header))
@@ -131,188 +72,59 @@ def Recv_LP(Sock):
         Buf += Chunk
     return Buf
 
-def Send_Msg(Sock, Obj):
-    Send_LP(Sock, json.dumps(Obj).encode("utf-8"))
-
-def Recv_Msg(Sock):
-    Raw = Recv_LP(Sock)
-    if Raw is None:
-        return None
-    return json.loads(Raw.decode("utf-8"))
+def Validate_Genesis(Block):
+    if Block.get("Block") != 0:
+        return False, "Genesis Index Must Be 0"
+    if Block.get("Prev_Hash") not in ("", "0" * 64):
+        return False, "Genesis Prev_Hash Must Be Empty Or 64 Zeros"
+    return True, "Valid"
 
 def Validate_Block(Block, Prev_Block):
     if Block["Block"] != Prev_Block["Block"] + 1:
-        return False, f"Index Mismatch (Expected {Prev_Block['Block']+1}, Got {Block['Block']})"
+        return False, f"Index Mismatch (Expected {Prev_Block['Block'] + 1}, Got {Block['Block']})"
     if Block["Prev_Hash"] != Prev_Block["Hash"]:
-        return False, "Previous_Hash Mismatch"
-    Block_Data = {
-        "Block":     Block["Block"],
-        "Timestamp": Block["Timestamp"],
-        "Data":      Block["Data"],
-        "Prev_Hash": Block["Prev_Hash"]
-    }
-    Recomputed = Calculate_Hash(Block_Data)
+        return False, "Prev_Hash Mismatch"
+    Recomputed = Calculate_Hash(Block)
     if Recomputed != Block["Hash"]:
         return False, "Hash Recompute Failed"
     return True, "Valid"
 
-def Validate_Genesis(Block):
-    if Block["Block"] != 0:
-        return False, "Genesis Index Must Be 0"
-    if Block["Prev_Hash"] != "" and Block["Prev_Hash"] != "0" * 64:
-        return False, "Genesis Prev_Hash Must Be Empty Or 64 Zeros"
-    if Block["Hash"] != "0" * 64:
-        return False, "Genesis Hash Must Be 64 Zeros"
-    return True, "Valid"
-
-def Scan_Network(My_IP, Prefix, N_Threads=254):
-    Found = []
-    Lock  = threading.Lock()
-
-    def Try(IP):
-        try:
-            S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            S.settimeout(0.35)
-            S.connect((IP, Port))
-            S.settimeout(3.0)
-            Greeting = S.recv(1024).decode()
-            if Greeting != Handshake_A:
-                S.close()
-                return
-            S.send(Handshake_B.encode())
-            S.settimeout(None)
-            with Lock:
-                Found.append((IP, S))
-                print(f"  [Peer Found]  Connected & Verified -> {IP}")
-        except Exception:
-            pass
-
-    Threads = []
-    for I in range(1, 255):
-        IP = f"{Prefix}{I}"
-        if IP in (My_IP, "127.0.0.1"):
-            continue
-        T = threading.Thread(target=Try, args=(IP,), daemon=True)
-        Threads.append(T)
-        T.start()
-
-    for T in Threads:
-        T.join()
-
-    return Found
-
-def Majority_Block(Responses):
-    Valid_Blocks = [B for B in Responses if B is not None]
-    if not Valid_Blocks:
-        return None
-    Counter          = collections.Counter(json.dumps(B, sort_keys=True) for B in Valid_Blocks)
-    Top_Json, Top_Count = Counter.most_common(1)[0]
-    N_Peers          = len(Responses)
-    Threshold        = N_Peers // 2 + 1 if N_Peers > 1 else 1
-    if Top_Count >= Threshold:
-        return json.loads(Top_Json)
-    return None
-
-def Collect_Chain_From_Peers(Peers):
-    if not Peers:
-        return []
-
-    N = len(Peers)
-    print(f"\n  [Recovery]  Requesting Chain Data From {N} Peer(s)...\n")
-
-    All_Blocks_By_Index = collections.defaultdict(list)
-
-    def Drain_Peer(IP, Sock, Received):
-        try:
-            while True:
-                Sock.settimeout(4.0)
-                Raw = Recv_LP(Sock)
-                if Raw is None:
-                    break
-                Block = json.loads(Raw.decode("utf-8"))
-                if isinstance(Block, dict) and "Block" in Block:
-                    Received.append(Block)
-        except Exception:
-            pass
-
-    Thread_Results = {}
-    Drain_Threads  = []
-
-    for IP, Sock in Peers:
-        Thread_Results[IP] = []
-        T = threading.Thread(
-            target=Drain_Peer,
-            args=(IP, Sock, Thread_Results[IP]),
-            daemon=True
-        )
-        Drain_Threads.append((IP, T))
-        T.start()
-
-    for _, T in Drain_Threads:
-        T.join(timeout=8)
-
-    for IP, Blocks in Thread_Results.items():
-        print(f"  [Peer {IP}]  Received {len(Blocks)} Block(s)")
-        for B in Blocks:
-            All_Blocks_By_Index[B["Block"]].append(B)
-
-    if not All_Blocks_By_Index:
-        return []
-
-    Max_Index = max(All_Blocks_By_Index.keys())
-    print(f"\n  [Consensus] Running Block-By-Block Majority Vote (0 -> {Max_Index})...\n")
-
-    Agreed_Chain = []
-
-    for Idx in range(0, Max_Index + 1):
-        Candidates = All_Blocks_By_Index.get(Idx, [])
-        Padding    = [None] * (N - len(Candidates))
-        Responses  = Candidates + Padding
-        Winner     = Majority_Block(Responses)
-
-        if Winner is None:
-            Count = len(Candidates)
-            print(f"  Block {Idx:>4} | No Majority ({Count}/{N} Responded) — Skipped")
-            break
-
-        if Idx == 0:
-            G_Ok, G_Reason = Validate_Genesis(Winner)
-            Status = "OK" if G_Ok else f"INVALID ({G_Reason})"
-            print(f"  Block {Idx:>4} | Hash: {Winner['Hash'][:16]}... | Genesis: {Status}")
-            if not G_Ok:
-                break
-            Agreed_Chain.append(Winner)
-        else:
-            if not Agreed_Chain:
-                break
-            V_Ok, V_Reason = Validate_Block(Winner, Agreed_Chain[-1])
-            Status = "OK" if V_Ok else f"INVALID ({V_Reason})"
-            print(f"  Block {Idx:>4} | Hash: {Winner['Hash'][:16]}... | Chain Link: {Status}")
-            if not V_Ok:
-                break
-            Agreed_Chain.append(Winner)
-
-    return Agreed_Chain
-
-def Apply_Agreed_Chain(Agreed_Chain):
-    os.makedirs(Folder, exist_ok=True)
-    for Block in Agreed_Chain:
-        Path = Save_Block(Block)
-        print(f"  [Saved]  Block {Block['Block']} -> {os.path.basename(Path)}")
-
-def Receive_New_Blocks(Sock, IP):
+def Handle_TX(Client_Socket, Addr):
     global Chain
-    print(f"  [Listening] Waiting For New Blocks From {IP}...")
+
+    print(f"\n  [Connected]   TX Node At {Addr[0]} Is Connecting...")
+
+    try:
+        Client_Socket.settimeout(5.0)
+        Client_Socket.send(Handshake_A.encode())
+
+        Response = Client_Socket.recv(1024).decode()
+        if Response != Handshake_B:
+            print(f"  [Auth Failed] Wrong Response From {Addr[0]}: '{Response}'")
+            Client_Socket.close()
+            return
+
+        Client_Socket.settimeout(None)
+        print(f"  [Auth OK]     {Addr[0]} Verified As TX Node ✓")
+
+    except Exception as E:
+        print(f"  [Auth Error]  Handshake Failed With {Addr[0]} | {E}")
+        Client_Socket.close()
+        return
+
+    print(f"  [Listening]   Waiting For Blocks From {Addr[0]}...\n")
+
     while True:
         try:
-            Raw = Recv_LP(Sock)
+            Raw = Recv_Length_Prefixed(Client_Socket)
             if Raw is None:
-                print(f"  [Offline]   Server {IP} Closed Connection")
+                print(f"\n  [Offline]   TX Node {Addr[0]} Closed Connection.")
                 break
 
             Block = json.loads(Raw.decode("utf-8"))
 
-            if isinstance(Block, dict) and Block.get("Type") == "BLOCK_REPLY":
+            if not isinstance(Block, dict) or "Block" not in Block:
+                print(f"  [Invalid]   Non-Block Packet From {Addr[0]}")
                 continue
 
             with Chain_Lock:
@@ -323,7 +135,7 @@ def Receive_New_Blocks(Sock, IP):
                 if G_Ok:
                     Path      = Save_Block(Block)
                     File_Hash = SHA256_File(Path)
-                    print(f"\n  [Received]  Block 0 (Genesis)")
+                    print(f"  [Received]  Block 0 (Genesis) From {Addr[0]}")
                     print(f"  [Hash]      {Block['Hash']}")
                     print(f"  [File SHA]  {File_Hash[:40]}...")
                     with Chain_Lock:
@@ -337,84 +149,64 @@ def Receive_New_Blocks(Sock, IP):
                 if V_Ok:
                     Path      = Save_Block(Block)
                     File_Hash = SHA256_File(Path)
-                    print(f"\n  [Received]  Block {Block['Block']}")
+                    print(f"\n  [Received]  Block {Block['Block']} From {Addr[0]}")
                     print(f"  [Hash]      {Block['Hash']}")
                     print(f"  [Prev Hash] {Block['Prev_Hash'][:40]}...")
                     print(f"  [File SHA]  {File_Hash[:40]}...")
                     with Chain_Lock:
                         Chain.append(Block)
                 else:
-                    print(f"  [Rejected]  Block {Block['Block']} From {IP} | {V_Reason}")
+                    print(f"  [Rejected]  Block {Block['Block']} | {V_Reason}")
 
         except Exception as E:
-            print(f"  [Error]     Lost Connection To {IP} | {E}")
+            print(f"  [Error]     Lost Connection To {Addr[0]} | {E}")
             break
 
+    Client_Socket.close()
+
+def Accept_Loop(Server_Socket):
+    while True:
+        try:
+            Client_Socket, Addr = Server_Socket.accept()
+            Client_Socket.settimeout(None)
+            Thread = threading.Thread(
+                target=Handle_TX,
+                args=(Client_Socket, Addr),
+                daemon=True
+            )
+            Thread.start()
+        except Exception as E:
+            print(f"  [Accept Err] {E}")
+
 def Start_RX():
-    global Chain
+    Node_IP = Get_Local_IP()
 
-    My_IP, Prefix = Get_Local_Info()
-
-    Banner("FerroFy RX — Peer Blockchain Node 🔗")
-    print(f"  Node IP  :  {My_IP}")
+    Banner("FerroFy RX — Blockchain Receiver Node 🔗")
+    print(f"  Node IP  :  {Node_IP}")
     print(f"  Port     :  {Port}")
     print(f"  Blocks   :  {Folder}/")
     print("=" * BANNER_W)
-
-    print("\n  [Local Chain] Verifying Local Blocks First...\n")
-    Local_Chain, Corrupt = Verify_Full_Chain(Verbose=True)
-
-    print("\n  [Scan] Discovering Peers On LAN...\n")
-    Peers = Scan_Network(My_IP, Prefix)
-
-    N = len(Peers)
-    print(f"\n  [Peers]   {N} Active Peer(s) Found")
-
-    if N == 0:
-        print("  [Waiting] No Peers Found. Retrying In 60 Seconds...")
-        time.sleep(60)
-        Start_RX()
-        return
-
-    print(f"\n  [Analysis] Local Blocks: {len(Local_Chain)} | Corrupt: {len(Corrupt)}")
-
-    Needs_Recovery = len(Corrupt) > 0 or len(Local_Chain) == 0
-
-    if Needs_Recovery:
-        print(f"\n  [Recovery] Chain Is Incomplete Or Corrupt. Starting Peer Correction...\n")
-        Agreed_Chain = Collect_Chain_From_Peers(Peers)
-        if Agreed_Chain:
-            print(f"\n  [Applying] Writing {len(Agreed_Chain)} Consensus Block(s) To Disk...\n")
-            Apply_Agreed_Chain(Agreed_Chain)
-            with Chain_Lock:
-                Chain = Agreed_Chain
-            print(f"\n  [OK]       Chain Restored To {len(Chain)} Block(s) Via {N}-Node Majority.\n")
-        else:
-            print("  [Fail]     Could Not Reach Majority. Chain Left As-Is.\n")
-            with Chain_Lock:
-                Chain = Local_Chain
-    else:
-        print("  [OK]       Local Chain Is Clean. Skipping Recovery.\n")
-        with Chain_Lock:
-            Chain = Local_Chain
-
+    print(f"\n  [Ready]    Listening For TX Connections On {Node_IP}:{Port}")
+    print(f"  [Info]     Share This IP With TX Node To Start Receiving\n")
     print("=" * BANNER_W)
-    print(f"  [Ready]    Listening For New Blocks From {N} Peer(s)...\n")
 
-    Recv_Threads = []
-    for IP, Sock in Peers:
-        T = threading.Thread(
-            target=Receive_New_Blocks,
-            args=(Sock, IP),
-            daemon=True
-        )
-        T.start()
-        Recv_Threads.append(T)
+    Server_Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    Server_Socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    Server_Socket.bind((Host, Port))
+    Server_Socket.listen(10)
+
+    Accept_Thread = threading.Thread(
+        target=Accept_Loop,
+        args=(Server_Socket,),
+        daemon=True
+    )
+    Accept_Thread.start()
 
     try:
-        while any(T.is_alive() for T in Recv_Threads):
+        while True:
             time.sleep(1)
     except KeyboardInterrupt:
-        print("\n\n  [Shutdown]  RX Node Stopping.")
+        print("\n\n  [Shutdown]  RX Node Stopped.")
+        Server_Socket.close()
 
 Start_RX()

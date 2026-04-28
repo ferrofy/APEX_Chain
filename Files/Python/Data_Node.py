@@ -16,11 +16,24 @@ from Blockchain import (
     validate_block,
     validate_chain,
 )
-from Protocol import get_local_ip, now_utc, parse_host_port, recv_packet, request, send_packet
+from Protocol import (
+    DATA_NODE_PORT,
+    DEFAULT_LISTEN_HOST,
+    DOC_NODE_PORT,
+    get_local_ip,
+    now_utc,
+    parse_fixed_endpoint,
+    recv_packet,
+    request,
+    send_packet,
+)
 
-DEFAULT_DOC_PORT = 5100
-DEFAULT_DATA_PORT = 5200
-DEFAULT_BLOCK_ROOT = "Blocks"
+PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, "..", ".."))
+
+DEFAULT_DOC_PORT = DOC_NODE_PORT
+DEFAULT_DATA_PORT = DATA_NODE_PORT
+DEFAULT_BLOCK_ROOT = os.path.join(PROJECT_ROOT, "Blocks")
 
 
 def ask_int(label, default):
@@ -31,13 +44,13 @@ def ask_int(label, default):
 
 
 def ask_endpoints(label, default_port):
-    count = ask_int(f"How many {label}s to connect / allow", 0)
+    count = ask_int(f"How many {label}s to connect", 0)
     endpoints = []
     for index in range(count):
         while True:
-            raw = input(f"{label} {index + 1} IP[:port] > ").strip()
+            raw = input(f"{label} {index + 1} IP / host [port {default_port}] > ").strip()
             try:
-                endpoints.append(parse_host_port(raw, default_port))
+                endpoints.append(parse_fixed_endpoint(raw, default_port, label))
                 break
             except Exception as exc:
                 print(f"Invalid address: {exc}")
@@ -78,7 +91,7 @@ class DataNode:
         self.log(f"Data Node listening on {self.listen_host}:{self.port}")
         self.log(f"WiFi IP detected as {self.local_ip}")
         self.log(f"Block folder: {self.folder}")
-        self.log(f"Allowed Doc Nodes: {self.endpoint_text(self.doc_nodes)}")
+        self.log(f"Allowed Doc Nodes: {self.endpoint_text(self.doc_nodes, empty='any')}")
         self.log(f"Data Peers: {self.endpoint_text(self.peer_tuples())}")
 
         self.probe_doc_nodes()
@@ -133,6 +146,7 @@ class DataNode:
 
     def handle_client(self, client, address):
         try:
+            client.settimeout(10.0)
             packet = recv_packet(client)
             if not isinstance(packet, dict):
                 send_packet(client, {"ok": False, "error": "packet must be a JSON object"})
@@ -465,9 +479,9 @@ class DataNode:
         if rejected:
             self.log("Some peers disagreed: " + "; ".join(rejected))
 
-    def endpoint_text(self, endpoints):
+    def endpoint_text(self, endpoints, empty="none"):
         if not endpoints:
-            return "none"
+            return empty
         return ", ".join(f"{host}:{port}" for host, port in endpoints)
 
     def advertised_host(self):
@@ -481,7 +495,7 @@ class DataNode:
         print(f"Node       : {self.node_id}")
         print(f"Listen     : {self.listen_host}:{self.port}")
         print(f"Folder     : {self.folder}")
-        print(f"Doc Nodes  : {self.endpoint_text(self.doc_nodes)}")
+        print(f"Doc Nodes  : {self.endpoint_text(self.doc_nodes, empty='any')}")
         print(f"Data Peers : {self.endpoint_text(self.peer_tuples())}")
         print(f"Blocks     : {summary['length']}")
         print(f"Valid      : {summary['valid']} ({summary['reason']})")
@@ -507,11 +521,13 @@ def Start_Data():
     print("FerroFy Data Node - Local WiFi Blockchain Storage")
     print("=" * 72)
     print(f"Detected WiFi IP: {get_local_ip()}")
+    print(f"This Data Node listens on all local interfaces at fixed port {DEFAULT_DATA_PORT}.")
+    print(f"User Nodes connect to Doc port {DEFAULT_DOC_PORT}; Doc Nodes submit to Data port {DEFAULT_DATA_PORT}.")
     print()
 
-    listen_host = input("This Data Node listen IP [0.0.0.0] > ").strip() or "0.0.0.0"
-    port = ask_int("This Data Node port", DEFAULT_DATA_PORT)
-    doc_nodes = ask_endpoints("Doc Node", DEFAULT_DOC_PORT)
+    listen_host = DEFAULT_LISTEN_HOST
+    port = DEFAULT_DATA_PORT
+    doc_nodes = []
     data_peers = ask_endpoints("Data Node peer", DEFAULT_DATA_PORT)
 
     folder_default = os.path.join(DEFAULT_BLOCK_ROOT, f"DataNode_{port}")
@@ -542,7 +558,7 @@ def Start_Data():
                 node.print_status()
             elif command == "peers":
                 print("Data Peers:", node.endpoint_text(node.peer_tuples()))
-                print("Doc Nodes :", node.endpoint_text(node.doc_nodes))
+                print("Doc Nodes :", node.endpoint_text(node.doc_nodes, empty="any"))
             else:
                 print("Unknown command. Use: status, chain, repair, peers, quit")
     except KeyboardInterrupt:

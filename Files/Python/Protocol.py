@@ -3,6 +3,9 @@ import socket
 import time
 
 MAX_PACKET_BYTES = 20 * 1024 * 1024
+DEFAULT_LISTEN_HOST = "0.0.0.0"
+DOC_NODE_PORT = 5000
+DATA_NODE_PORT = 5001
 
 
 def now_utc():
@@ -51,6 +54,16 @@ def request(host, port, packet, timeout=8.0, connect_timeout=None):
         return recv_packet(sock)
 
 
+def parse_port(port_text):
+    try:
+        port = int(str(port_text).strip())
+    except Exception as exc:
+        raise ValueError(f"invalid port: {port_text}") from exc
+    if not 1 <= port <= 65535:
+        raise ValueError(f"port must be between 1 and 65535: {port}")
+    return port
+
+
 def parse_host_port(value, default_port):
     value = value.strip()
     if not value:
@@ -62,9 +75,17 @@ def parse_host_port(value, default_port):
         port_text = port_text.strip()
         if not host or not port_text:
             raise ValueError(f"invalid address: {value}")
-        return host, int(port_text)
+        return host, parse_port(port_text)
 
-    return value, int(default_port)
+    return value, parse_port(default_port)
+
+
+def parse_fixed_endpoint(value, fixed_port, label="endpoint"):
+    host, port = parse_host_port(value, fixed_port)
+    fixed_port = parse_port(fixed_port)
+    if port != fixed_port:
+        raise ValueError(f"{label} uses fixed port {fixed_port}. Enter the IP/host only, or use :{fixed_port}.")
+    return host, fixed_port
 
 
 def parse_peer_list(raw, default_port):
@@ -85,9 +106,19 @@ def parse_peer_list(raw, default_port):
 def get_local_ip():
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
-        sock.connect(("8.8.8.8", 80))
-        return sock.getsockname()[0]
+        sock.connect(("10.255.255.255", 1))
+        ip = sock.getsockname()[0]
+        if ip and not ip.startswith("127."):
+            return ip
     except Exception:
-        return "127.0.0.1"
+        pass
     finally:
         sock.close()
+
+    try:
+        for ip in socket.gethostbyname_ex(socket.gethostname())[2]:
+            if ip and not ip.startswith("127."):
+                return ip
+    except Exception:
+        pass
+    return "127.0.0.1"

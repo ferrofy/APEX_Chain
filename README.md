@@ -12,7 +12,7 @@ User Node  ->  Doc Node  ->  Data Node Blockchain Network
 | --- | --- | --- |
 | User Node | `Files/Python/User_Node.pyw` GUI | Enters data and sends it to one Doc Node |
 | Doc Node | `Files/Python/Doc_Node.pyw` GUI | Reviews User data and clicks Yes / No |
-| Data Node | `Files/Python/main.py` option 3, or `Files/Python/Data_Node.py` | Stores approved records as hash-linked blocks and syncs with other Data Nodes |
+| Data Node | `main.py` option 3, or `Files/Python/Data_Node.py` | Stores approved records as hash-linked blocks and syncs with other Data Nodes |
 
 The old two-node TX/RX design was removed so the project now follows only this
 three-node architecture.
@@ -33,10 +33,12 @@ The User Node asks for:
 
 | Node | Port |
 | --- | --- |
-| Doc Node | `5100` |
-| Data Node | `5200` |
+| User -> Doc Node | `5000` |
+| Doc Node -> Data Node | `5001` |
 
-On multiple Data Nodes, use different ports such as `5200`, `5201`, `5202`.
+Nodes do not ask for their own IP or own port. Each node listens automatically
+on all local network interfaces, and setup only asks for the remote machine to
+connect to.
 
 ## Running On Local WiFi
 
@@ -54,7 +56,7 @@ Look for the IPv4 address under the active WiFi adapter.
 Run from the project folder:
 
 ```bash
-python Files/Python/main.py
+python main.py
 ```
 
 Choose `3`.
@@ -62,28 +64,19 @@ Choose `3`.
 It asks:
 
 ```text
-This Data Node listen IP [0.0.0.0] >
-This Data Node port [5200] >
-How many Doc Nodes to connect / allow [0] >
-Doc Node 1 IP[:port] >
-How many Data Node peers to connect / allow [0] >
-Data Node peer 1 IP[:port] >
-Block folder [Blocks/DataNode_5200] >
+How many Data Node peers to connect [0] >
+Data Node peer 1 IP / host [port 5001] >
+Block folder [Blocks/DataNode_5001] >
 ```
 
-Use `0.0.0.0` for listen IP if you want the node to listen on all local network
-interfaces.
-
-For a second Data Node on the same machine:
+For another Data Node on another machine, use that machine's WiFi IP. The port
+stays `5001`.
 
 ```text
-This Data Node port [5200] > 5201
-How many Data Node peers to connect / allow [0] > 1
-Data Node peer 1 IP[:port] > 127.0.0.1:5200
-Block folder [Blocks/DataNode_5201] >
+How many Data Node peers to connect [0] > 1
+Data Node peer 1 IP / host [port 5001] > 192.168.1.25
+Block folder [Blocks/DataNode_5001] >
 ```
-
-For another machine, use that machine's WiFi IP instead of `127.0.0.1`.
 
 ## 2. Start Doc Node
 
@@ -93,16 +86,13 @@ Run:
 pythonw Files/Python/Doc_Node.pyw
 ```
 
-You can also run `python Files/Python/main.py` and choose `2`.
+You can also run `python main.py` and choose `2`.
 
 The Doc Node asks:
 
 ```text
-Doc Node Listen IP: 0.0.0.0
-Doc Node Port: 5100
-User Node IP: <the User machine WiFi IP>
 How Many Data Nodes: <number>
-Data Node 1 IP:Port: <data node WiFi IP>:5200
+Data Node 1: <data node WiFi IP>
 ```
 
 When User data arrives, the Doc GUI shows the fields and waits for:
@@ -118,13 +108,12 @@ Run:
 pythonw Files/Python/User_Node.pyw
 ```
 
-or run `python Files/Python/main.py` and choose `1`.
+or run `python main.py` and choose `1`.
 
 The User Node asks only for:
 
 ```text
-Doc Node IP
-Doc Node Port
+Doc Node IP / Host
 ```
 
 Fill the data fields and click `Send To Doc Node`. If the Doc Node is not
@@ -141,7 +130,7 @@ Data Nodes do not mine and do not use nonce values. A block is simply:
   "index": 1,
   "timestamp": "2026-04-28T16:30:00Z",
   "previous_hash": "abc123...",
-  "creator": "doc:192.168.1.10:5100",
+  "creator": "doc:192.168.1.10:5000",
   "data": {
     "kind": "approved_doc_record",
     "doc_id": "...",

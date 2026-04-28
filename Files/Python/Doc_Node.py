@@ -17,11 +17,24 @@ from Gui_Theme import (
     status_color,
     style_text_widget,
 )
-from Protocol import get_local_ip, now_utc, parse_host_port, recv_packet, request, send_packet
+from Protocol import (
+    DATA_NODE_PORT,
+    DEFAULT_LISTEN_HOST,
+    DOC_NODE_PORT,
+    get_local_ip,
+    now_utc,
+    parse_fixed_endpoint,
+    recv_packet,
+    request,
+    send_packet,
+)
 
-DEFAULT_DOC_PORT = 5100
-DEFAULT_DATA_PORT = 5200
-DEFAULT_DOC_FOLDER = os.path.join("Files", "Documents")
+PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, "..", ".."))
+
+DEFAULT_DOC_PORT = DOC_NODE_PORT
+DEFAULT_DATA_PORT = DATA_NODE_PORT
+DEFAULT_DOC_FOLDER = os.path.join(PROJECT_ROOT, "Files", "Documents")
 PENDING_TIMEOUT_SECONDS = 900
 
 FORM_KEYS = [
@@ -57,7 +70,7 @@ class DocNode:
     ):
         self.listen_host = listen_host or "0.0.0.0"
         self.port = int(port)
-        self.allowed_user_ip = allowed_user_ip.strip()
+        self.allowed_user_ip = (allowed_user_ip or "").strip()
         self.data_nodes = list(data_nodes)
         self.folder = folder
         self.local_ip = get_local_ip()
@@ -91,7 +104,7 @@ class DocNode:
 
         self.log(f"Doc Node listening on {self.listen_host}:{self.port}")
         self.log(f"WiFi IP detected as {self.local_ip}")
-        self.log(f"Allowed User Node IP: {self.allowed_user_ip or 'any'}")
+        self.log(f"Allowed User Nodes: {self.allowed_user_ip or 'any'}")
         self.log(f"Data Nodes: {self.data_node_text()}")
         self.probe_data_nodes()
 
@@ -116,6 +129,7 @@ class DocNode:
 
     def handle_client(self, client, address):
         try:
+            client.settimeout(10.0)
             packet = recv_packet(client)
             if not isinstance(packet, dict):
                 send_packet(client, {"ok": False, "error": "packet must be a JSON object"})
@@ -144,7 +158,7 @@ class DocNode:
     def handle_user_data(self, packet, address):
         if not self.user_allowed(address[0]):
             self.log(f"Rejected User Node {address[0]} because it is not the configured IP")
-            return {"ok": False, "error": "this Doc Node is configured for another User Node IP"}
+            return {"ok": False, "error": "this Doc Node is configured for another User Node"}
 
         payload = packet.get("payload")
         if not isinstance(payload, dict):
@@ -361,7 +375,7 @@ class DocNodeApp:
         header = BlockchainHeader(
             self.config_frame,
             "FERROFY DOC NODE",
-            f"LOCAL IP {get_local_ip()}  /  APPROVAL GATEWAY  /  DATA NODE FANOUT",
+            f"LOCAL IP {get_local_ip()}  /  USER PORT {DEFAULT_DOC_PORT}  /  DATA PORT {DEFAULT_DATA_PORT}",
         )
         header.grid(row=0, column=0, sticky="ew")
 
@@ -375,12 +389,12 @@ class DocNodeApp:
         network.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
         network.columnconfigure(1, weight=1)
 
-        ttk.Label(network, text="NETWORK BINDING", style="PanelAccent.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(network, text="CONNECTION ROUTES", style="PanelAccent.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Separator(network).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 14))
 
-        self.listen_ip = self._entry_row(network, 2, "Doc Listen IP", "0.0.0.0")
-        self.listen_port = self._entry_row(network, 3, "Doc Port", str(DEFAULT_DOC_PORT))
-        self.user_ip = self._entry_row(network, 4, "User Node IP", "127.0.0.1")
+        self._info_row(network, 2, "User connects to", f"this machine on port {DEFAULT_DOC_PORT}")
+        self._info_row(network, 3, "Doc listens on", "all local network interfaces")
+        self._info_row(network, 4, "Allowed users", "any User Node on this local network")
 
         ttk.Label(network, text="Data Node Count", style="Panel.TLabel").grid(row=5, column=0, sticky="w", pady=7)
         count_row = ttk.Frame(network, style="Panel.TFrame")
@@ -395,7 +409,7 @@ class DocNodeApp:
         data_panel.columnconfigure(0, weight=1)
         data_panel.rowconfigure(2, weight=1)
 
-        ttk.Label(data_panel, text="DATA NODE ROUTES", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(data_panel, text=f"DATA NODE ROUTES (PORT {DEFAULT_DATA_PORT})", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Separator(data_panel).grid(row=1, column=0, sticky="ew", pady=(10, 14))
         self.data_inputs_frame = ttk.Frame(data_panel, style="Panel2.TFrame")
         self.data_inputs_frame.grid(row=2, column=0, sticky="nsew")
@@ -414,6 +428,10 @@ class DocNodeApp:
         entry.grid(row=row, column=1, sticky="ew", pady=7)
         return entry
 
+    def _info_row(self, parent, row, label, value):
+        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=7, padx=(0, 10))
+        ttk.Label(parent, text=value, style="PanelMuted.TLabel").grid(row=row, column=1, sticky="w", pady=7)
+
     def build_data_inputs(self):
         for child in self.data_inputs_frame.winfo_children():
             child.destroy()
@@ -431,7 +449,7 @@ class DocNodeApp:
                 row=index, column=0, sticky="w", pady=7, padx=(0, 12)
             )
             entry = ttk.Entry(self.data_inputs_frame)
-            entry.insert(0, f"127.0.0.1:{DEFAULT_DATA_PORT + index}")
+            entry.insert(0, "127.0.0.1")
             entry.grid(row=index, column=1, sticky="ew", pady=7)
             self.data_entries.append(entry)
 
@@ -529,16 +547,15 @@ class DocNodeApp:
 
     def start_node(self):
         try:
-            port = int(self.listen_port.get().strip())
-            data_nodes = [parse_host_port(entry.get().strip(), DEFAULT_DATA_PORT) for entry in self.data_entries]
+            data_nodes = [parse_fixed_endpoint(entry.get().strip(), DEFAULT_DATA_PORT, "Data Node") for entry in self.data_entries]
         except Exception as exc:
             messagebox.showerror("Invalid Setup", str(exc))
             return
 
         self.node = DocNode(
-            listen_host=self.listen_ip.get().strip() or "0.0.0.0",
-            port=port,
-            allowed_user_ip=self.user_ip.get().strip(),
+            listen_host=DEFAULT_LISTEN_HOST,
+            port=DEFAULT_DOC_PORT,
+            allowed_user_ip="",
             data_nodes=data_nodes,
             on_pending=lambda pending: self.root.after(0, self.show_pending, pending),
             on_log=lambda line: self.root.after(0, self.add_log, line),

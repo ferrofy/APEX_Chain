@@ -10,13 +10,12 @@ from Gui_Theme import (
     append_log,
     install_dark_theme,
     make_panel,
-    set_text_value,
     status_color,
     style_text_widget,
 )
-from Protocol import get_local_ip, now_utc, parse_host_port, request
+from Protocol import DOC_NODE_PORT, get_local_ip, now_utc, parse_fixed_endpoint, request
 
-DEFAULT_DOC_PORT = 5100
+DEFAULT_DOC_PORT = DOC_NODE_PORT
 RETRY_SECONDS = 3
 
 FIELDS = [
@@ -66,7 +65,7 @@ class UserNodeApp:
         header = BlockchainHeader(
             self.root,
             "FERROFY USER NODE",
-            f"LOCAL IP {get_local_ip()}  /  ONE DOC NODE LINK  /  SIGNED JSON REQUEST",
+            f"LOCAL IP {get_local_ip()}  /  DOC PORT {DEFAULT_DOC_PORT}  /  SIGNED JSON REQUEST",
         )
         header.grid(row=0, column=0, sticky="ew")
 
@@ -83,18 +82,19 @@ class UserNodeApp:
         ttk.Label(left, text="DOC NODE TARGET", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Separator(left).grid(row=1, column=0, sticky="ew", pady=(10, 14))
 
-        ttk.Label(left, text="Doc Node IP", style="Panel.TLabel").grid(row=2, column=0, sticky="w")
+        ttk.Label(left, text="Doc Node IP / Host", style="Panel.TLabel").grid(row=2, column=0, sticky="w")
         self.doc_ip = ttk.Entry(left)
         self.doc_ip.insert(0, "127.0.0.1")
         self.doc_ip.grid(row=3, column=0, sticky="ew", pady=(5, 12))
 
-        ttk.Label(left, text="Doc Node Port", style="Panel.TLabel").grid(row=4, column=0, sticky="w")
-        self.doc_port = ttk.Entry(left)
-        self.doc_port.insert(0, str(DEFAULT_DOC_PORT))
-        self.doc_port.grid(row=5, column=0, sticky="ew", pady=(5, 16))
+        ttk.Label(
+            left,
+            text=f"User -> Doc uses fixed port {DEFAULT_DOC_PORT}",
+            style="PanelMuted.TLabel",
+        ).grid(row=4, column=0, sticky="w", pady=(0, 16))
 
         self.status_bar = tk.Frame(left, bg=COLORS["panel_2"], highlightthickness=1, highlightbackground=COLORS["line"])
-        self.status_bar.grid(row=6, column=0, sticky="ew", pady=(4, 16))
+        self.status_bar.grid(row=5, column=0, sticky="ew", pady=(4, 16))
         self.status_dot = tk.Canvas(self.status_bar, width=18, height=18, highlightthickness=0, bg=COLORS["panel_2"])
         self.status_dot.pack(side="left", padx=(12, 7), pady=12)
         self.status_text = tk.Label(
@@ -109,17 +109,17 @@ class UserNodeApp:
         self._draw_status_dot("info")
 
         self.send_button = ttk.Button(left, text="SEND TO DOC NODE", style="Accent.TButton", command=self.start_send)
-        self.send_button.grid(row=7, column=0, sticky="ew", pady=(0, 10))
+        self.send_button.grid(row=6, column=0, sticky="ew", pady=(0, 10))
 
         self.stop_button = ttk.Button(left, text="STOP RETRY", command=self.stop_retry, state="disabled")
-        self.stop_button.grid(row=8, column=0, sticky="ew")
+        self.stop_button.grid(row=7, column=0, sticky="ew")
 
-        ttk.Label(left, text="TRANSMISSION LOG", style="PanelAccent.TLabel").grid(row=9, column=0, sticky="w", pady=(22, 8))
+        ttk.Label(left, text="TRANSMISSION LOG", style="PanelAccent.TLabel").grid(row=8, column=0, sticky="w", pady=(22, 8))
         self.log_box = tk.Text(left, height=13, wrap="word")
         style_text_widget(self.log_box, readonly=True)
         self.log_box.configure(font=("Consolas", 9))
-        self.log_box.grid(row=10, column=0, sticky="nsew")
-        left.rowconfigure(10, weight=1)
+        self.log_box.grid(row=9, column=0, sticky="nsew")
+        left.rowconfigure(9, weight=1)
 
         form = make_panel(shell, padding=18, style="Panel2.TFrame")
         form.grid(row=0, column=1, sticky="nsew")
@@ -170,10 +170,7 @@ class UserNodeApp:
             return
 
         try:
-            doc_host, doc_port = parse_host_port(
-                f"{self.doc_ip.get().strip()}:{self.doc_port.get().strip()}",
-                DEFAULT_DOC_PORT,
-            )
+            doc_host, doc_port = parse_fixed_endpoint(self.doc_ip.get().strip(), DEFAULT_DOC_PORT, "Doc Node")
         except Exception as exc:
             messagebox.showerror("Invalid Doc Node", str(exc))
             return

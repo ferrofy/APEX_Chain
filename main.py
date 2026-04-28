@@ -10,12 +10,10 @@ import hashlib
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-Port       = 5000
-BANNER_W   = 62
-HANDSHAKE  = "Mine_RX"
-
-Found_Devices = []
-Lock          = threading.Lock()
+IDENTITY_PORT = 5000
+BANNER_W      = 62
+SCAN_TIMEOUT  = 0.35
+SCAN_WORKERS  = 80
 
 def Clr(Code, Text):
     return f"\033[{Code}m{Text}\033[0m"
@@ -27,6 +25,7 @@ def Red(T):     return Clr("91", T)
 def Cyan(T):    return Clr("96", T)
 def Blue(T):    return Clr("94", T)
 def Dim(T):     return Clr("2",  T)
+def Magenta(T): return Clr("95", T)
 
 LOGO = [
     " █████╗ ██████╗ ███████╗██╗  ██╗",
@@ -58,7 +57,7 @@ def Info(Label, Value):
     print(f"  {L:<36}  {Value}")
 
 def Log(Tag, Msg, Color="dim"):
-    Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan}
+    Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan, "magenta": Magenta}
     Fn = Colors.get(Color, Dim)
     print(f"  {Fn(f'[{Tag}]'):<28}  {Msg}")
 
@@ -82,8 +81,13 @@ def SHA256_Str(Text):
     return hashlib.sha256(Text.encode("utf-8")).hexdigest()
 
 def Calculate_Hash(Block_Data):
-    Raw = json.dumps(Block_Data, sort_keys=True)
-    return SHA256_Str(Raw)
+    Core = {
+        "Block":     Block_Data["Block"],
+        "Timestamp": Block_Data["Timestamp"],
+        "Data":      Block_Data["Data"],
+        "Prev_Hash": Block_Data["Prev_Hash"],
+    }
+    return SHA256_Str(json.dumps(Core, sort_keys=True))
 
 def Load_Local_Chain(Folder):
     Chain = []
@@ -103,53 +107,61 @@ def Load_Local_Chain(Folder):
             pass
     return Chain
 
-def Try_Connect(IP):
+def Probe_Node(IP, Found, Lock):
     try:
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        S.settimeout(0.3)
-        S.connect((IP, Port))
-        S.settimeout(2.0)
+        S.settimeout(SCAN_TIMEOUT)
+        S.connect((IP, IDENTITY_PORT))
+        S.settimeout(1.5)
+        S.sendall(b"WHO")
+        Raw = b""
         try:
-            Greeting = S.recv(1024).decode()
-            if Greeting == HANDSHAKE:
-                S.close()
-                with Lock:
-                    Found_Devices.append(IP)
-                    Log("Node Found", f"Verified Peer → {Green(IP)}", "green")
-                return
-        except Exception:
+            while True:
+                Chunk = S.recv(512)
+                if not Chunk:
+                    break
+                Raw += Chunk
+        except socket.timeout:
             pass
         S.close()
-        with Lock:
-            Found_Devices.append(IP)
-            Log("Node Found", f"Port-5000 Node → {Green(IP)}", "green")
+
+        if Raw:
+            Info_Map = json.loads(Raw.decode("utf-8"))
+            Node_Type = Info_Map.get("Type", "UNKNOWN")
+            with Lock:
+                Found.append({"IP": IP, "Type": Node_Type, "Info": Info_Map})
     except Exception:
         pass
 
 def Scan_Network(My_IP, Prefix):
-    Section("Network Discovery Scan")
-    Info("Local IP",  My_IP)
-    Info("Subnet",    f"{Prefix}1  →  {Prefix}254")
-    Info("Port",      str(Port))
+    Section("Network Discovery  —  Scanning For Active Nodes")
+    Info("Local IP", My_IP)
+    Info("Subnet",   f"{Prefix}1  →  {Prefix}254")
+    Info("Port",     str(IDENTITY_PORT))
     print()
 
+    Found     = []
+    Lock      = threading.Lock()
     Threads   = []
     Done_Ref  = [0]
     Done_Lock = threading.Lock()
 
     def Wrapped(IP):
-        Try_Connect(IP)
+        Probe_Node(IP, Found, Lock)
         with Done_Lock:
             Done_Ref[0] += 1
 
     for i in range(1, 255):
         IP = f"{Prefix}{i}"
-        if IP in (My_IP, "127.0.0.1"):
+        if IP == My_IP:
             Done_Ref[0] += 1
             continue
         T = threading.Thread(target=Wrapped, args=(IP,), daemon=True)
         Threads.append(T)
-        T.start()
+
+    for k in range(0, len(Threads), SCAN_WORKERS):
+        for T in Threads[k : k + SCAN_WORKERS]:
+            T.start()
 
     Total = 253
     while Done_Ref[0] < Total:
@@ -164,86 +176,62 @@ def Scan_Network(My_IP, Prefix):
 
     print(f"\r  {Cyan('█' * 44)}  100%", flush=True)
     print()
+    return Found
 
-def Inspect_Chain(Folder):
-    Section("Local Chain Integrity Check  (Genesis → Tip)")
-    Entries = Load_Local_Chain(Folder)
-
-    if not Entries:
-        Log("Chain", "No Local Blocks Found", "yellow")
+def Print_Discovered_Nodes(Nodes):
+    Section("Discovered Nodes On Network")
+    if not Nodes:
+        Log("Scan", "No Active Nodes Found On This Subnet.", "yellow")
         print()
-        return [], []
-
-    Corrupt = []
-    Col     = f"  {'Blk':>4}  {'File':<10}  {'File-SHA256':>14}  {'Hash':>6}  {'Link':>6}  {'Status':>7}"
-    print(Col)
-    Sep_Parts = [Dim("─" * 4), Dim("─" * 10), Dim("─" * 14), Dim("─" * 6), Dim("─" * 6), Dim("─" * 7)]
-    print("  " + "  ".join(Sep_Parts))
-
-    for i, (Block, Path) in enumerate(Entries):
-        File   = os.path.basename(Path)
-        F_Hash = SHA256_File(Path)
-        Block_Data = {
-            "Block": Block["Block"],
-            "Timestamp": Block["Timestamp"],
-            "Data": Block["Data"],
-            "Prev_Hash": Block["Prev_Hash"]
-        }
-        if Block["Block"] == 0:
-            H_OK = Block["Hash"] == "0" * 64
-        else:
-            Recomp = Calculate_Hash(Block_Data)
-            H_OK = Recomp == Block["Hash"]
-        I_OK = Block["Block"] == i
-        L_OK = (Block["Prev_Hash"] == "" or Block["Prev_Hash"] == "0" * 64) if i == 0 else (Block["Prev_Hash"] == Entries[i-1][0]["Hash"])
-
-        All_OK = H_OK and L_OK and I_OK
-        Flag   = Green("   OK  ") if All_OK else Red("  FAIL ")
-        H_Txt  = Green("  OK") if H_OK else Red("FAIL")
-        L_Txt  = Green("  OK") if L_OK else Red("FAIL")
-
-        print(f"  {Block['Block']:>4}  {File:<10}  {F_Hash[:12]}...  {H_Txt}  {L_Txt}  {Flag}")
-        if not All_OK:
-            Corrupt.append(Block["Block"])
-
-    print()
-    if Corrupt:
-        Log("Result", f"{Red(str(len(Corrupt)))} Corrupt Block(s) Detected At Index(es): {Corrupt}", "red")
-    else:
-        Log("Result", f"{Green(str(len(Entries)))} Block(s) Verified Clean  ✓", "green")
-    print()
-
-    return [B for B, _ in Entries], Corrupt
-
-def Print_Chain_Summary(Chain):
-    if not Chain:
         return
-    Section("Blockchain State")
-    Last = Chain[-1]
-    Info("Total Blocks",    str(len(Chain)))
-    Info("Chain Height",    str(Last["Block"]))
-    Info("Tip Hash",        Cyan(Last["Hash"][:36] + "..."))
-    Info("Tip Prev-Hash",   Dim(Last["Prev_Hash"][:36] + "..."))
-    Ts = Last["Timestamp"]
-    Info("Tip Timestamp",   Ts)
-    Msg = Last["Data"].get("Message", "")
-    if Msg:
-        Info("Tip Message", Yellow(f'"{Msg}"'))
-    Node = Last["Data"].get("Node", "")
-    if Node:
-        Info("Mined By",    Node)
+
+    Type_Colors = {
+        "USER_NODE":      Blue,
+        "VALIDATOR_NODE": Green,
+        "DATA_NODE":      Magenta,
+        "UNKNOWN":        Dim,
+    }
+
+    for N in Nodes:
+        N_Type = N["Type"]
+        Color  = Type_Colors.get(N_Type, Dim)
+        print(f"  {Color(f'[{N_Type}]'):<38}  {Cyan(N['IP'])}")
     print()
 
-def Print_Mode(Mode, N_Peers):
-    Section("Node Mode Decision")
-    if Mode == "TX":
-        print(f"  {Green(Bold('▶  TRANSMITTER  (TX)  —  Origin Node'))}")
-        print(f"  {Dim('No existing blockchain peers found on this subnet.')}")
-        print(f"  {Dim('This node will create the genesis block and accept connections.')}")
+def Print_Chain_Summary(Folder):
+    Chain_Entries = Load_Local_Chain(Folder)
+    if not Chain_Entries:
+        return
+    Section("Local Blockchain State")
+    Last = Chain_Entries[-1][0]
+    Info("Total Blocks",  str(len(Chain_Entries)))
+    Info("Chain Height",  str(Last["Block"]))
+    Ts = Last.get("Timestamp", "")
+    if isinstance(Ts, int):
+        Info("Tip Timestamp", f"{Ts}  ({time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(Ts))})")
     else:
-        print(f"  {Blue(Bold('▶  RECEIVER  (RX)  —  Sync Node'))}")
-        print(f"  {Dim(f'{N_Peers} active peer(s) detected on this subnet.')}")
-        print(f"  {Dim('This node will sync the chain, run majority recovery if needed, and receive new blocks.')}")
+        Info("Tip Timestamp", str(Ts))
+    Wallet = Last["Data"].get("Wallet", "")
+    if Wallet:
+        Info("Last Wallet",  Cyan(Wallet[:16] + "...."))
+    print()
+
+def Print_Architecture():
+    Section("3-Node Architecture")
+    print(f"  {Blue('User Node')}    {Dim('─────►')}  {Green('Validator Node')}  {Dim('─────►')}  {Magenta('Data Node')}")
+    print()
+    print(f"  {Blue('Port 5000')}  Identity Handshake  (All Nodes)")
+    print(f"  {Green('Port 5001')}  User → Validator")
+    print(f"  {Magenta('Port 5002')}  Validator → Data")
+    print(f"  {Cyan('Port 5003')}  Chain Peer Sync  (Data Nodes)")
+    print()
+
+def Print_Node_Menu():
+    Section("Which Node Are You?")
+    print(f"  {Blue('[ 1 ]')}  {Blue('User Node')}       — Send Data Requests  (Port 5000 + 5001)")
+    print(f"  {Green('[ 2 ]')}  {Green('Validator Node')} — Approve / Reject    (Port 5000 + 5001 + 5002)")
+    print(f"  {Magenta('[ 3 ]')}  {Magenta('Data Node')}       — Store Blocks         (Port 5000 + 5002 + 5003)")
+    print(f"  {Dim('[ 0 ]')}  {Dim('Exit')}")
     print()
 
 def Main():
@@ -253,51 +241,66 @@ def Main():
 
     Base_Path   = os.path.dirname(os.path.abspath(__file__))
     Blocks_Path = os.path.join(Base_Path, "Blocks")
-    RX_Path     = os.path.join(Base_Path, "Files", "Python", "RX.py")
-    TX_Path     = os.path.join(Base_Path, "Files", "Python", "TX.py")
+    User_Path   = os.path.join(Base_Path, "Files", "Python", "User_Node.py")
+    Val_Path    = os.path.join(Base_Path, "Files", "Python", "Validator_Node.py")
+    Data_Path   = os.path.join(Base_Path, "Files", "Python", "Data_Node.py")
     Py_Exe      = sys.executable
 
     Section("System Information")
     My_IP, Prefix = Get_Local_Info()
-    Info("Python Executable",  Py_Exe)
-    Info("Node IP",            My_IP)
-    Info("Blocks Directory",   Blocks_Path)
-    Info("TX Script",          TX_Path)
-    Info("RX Script",          RX_Path)
+    Info("Python Executable", Py_Exe)
+    Info("Node IP",           My_IP)
+    Info("Blocks Directory",  Blocks_Path)
     print()
 
-    Chain, Corrupt = Inspect_Chain(Blocks_Path)
-    Print_Chain_Summary(Chain)
+    Print_Chain_Summary(Blocks_Path)
+    Print_Architecture()
 
-    Scan_Network(My_IP, Prefix)
+    Nodes = Scan_Network(My_IP, Prefix)
+    Print_Discovered_Nodes(Nodes)
 
-    N_Peers    = len(Found_Devices)
-    Node_Found = N_Peers > 0
+    Peer_IPs = [N["IP"] for N in Nodes]
 
-    if Corrupt:
-        Section("Chain Corruption Warning")
-        print(f"  {Red(f'{len(Corrupt)} Corrupt Block(s):')}  {Corrupt}")
-        if Node_Found:
-            print(f"  {Yellow('Peer Recovery Will Run Automatically Via RX Majority Consensus.')}")
+    if Nodes:
+        Section("Peer Registry")
+        By_Type = {}
+        for N in Nodes:
+            By_Type.setdefault(N["Type"], []).append(N["IP"])
+        for T, IPs in By_Type.items():
+            Info(T, "  ".join([Cyan(IP) for IP in IPs]))
+        print()
+
+    Print_Node_Menu()
+    Choice = input(f"  {Bold(Yellow('Select Node Type'))} > ").strip()
+
+    Scripts = {
+        "1": ("User Node",       User_Path),
+        "2": ("Validator Node",  Val_Path),
+        "3": ("Data Node",       Data_Path),
+    }
+
+    if Choice in Scripts:
+        Name, Script = Scripts[Choice]
+        Section(f"Launching {Name}")
+        Log("Peers",  f"Passing {len(Peer_IPs)} Known Peer(s) To Node", "cyan")
+        for IP in Peer_IPs:
+            Log("  Peer", Cyan(IP), "dim")
+        Log("Launch", f"Starting {Yellow(Name)}...", "green")
+        print()
+        time.sleep(0.3)
+
+        Peers_Arg = json.dumps(Peer_IPs)
+        if Choice == "3":
+            Process = subprocess.Popen([Py_Exe, Script])
         else:
-            print(f"  {Red('No Peers Found. Recovery Cannot Proceed Right Now.')}")
+            Process = subprocess.Popen([Py_Exe, Script, Peers_Arg])
+        Process.wait()
+
+    elif Choice == "0":
+        Log("Exit", "Goodbye.", "cyan")
         print()
-
-    Print_Mode("RX" if Node_Found else "TX", N_Peers)
-
-    Section("Launching Node Process")
-
-    if Node_Found:
-        Log("Launch", f"Starting RX Node  ({N_Peers} Peer(s) Available)...", "green")
-        print()
-        time.sleep(0.6)
-        Process = subprocess.Popen([Py_Exe, RX_Path])
     else:
-        Log("Launch", "Starting TX Node  (Awaiting Peer Connections)...", "yellow")
+        Log("Error", "Invalid Choice.  Restart And Try Again.", "red")
         print()
-        time.sleep(0.6)
-        Process = subprocess.Popen([Py_Exe, TX_Path])
-
-    Process.wait()
 
 Main()

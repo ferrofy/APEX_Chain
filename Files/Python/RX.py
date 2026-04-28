@@ -4,30 +4,101 @@ import sys
 import threading
 import time
 import json
+import hashlib
 import collections
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from Chain_Verify import (
-    Calculate_Hash, Verify_Full_Chain, Save_Block_To_File as Save_Block,
-    Get_Missing_Indices, SHA256_Str, SHA256_File, Folder,
-    Load_All_Blocks
-)
 
 Port        = 5000
 Handshake_A = "Mine_RX"
 Handshake_B = "Mine_TX"
 BANNER_W    = 60
+Folder      = "Blocks"
 
-Chain      = []
-Chain_Lock = threading.Lock()
+Chain       = []
+Chain_Lock  = threading.Lock()
 
 def Banner(Text, Char="="):
     print(Char * BANNER_W)
     print(f"  {Text}")
     print(Char * BANNER_W)
+
+def SHA256(Text):
+    return hashlib.sha256(Text.encode("utf-8")).hexdigest()
+
+def SHA256_Bytes(Data):
+    return hashlib.sha256(Data).hexdigest()
+
+def SHA256_File(Path):
+    with open(Path, "rb") as F:
+        return hashlib.sha256(F.read()).hexdigest()
+
+def Calculate_Hash(Block):
+    Raw = f"{Block['Block']}{Block['Timestamp']}{json.dumps(Block['Data'], sort_keys=True)}{Block['Prev_Hash']}"
+    return SHA256(Raw)
+
+def Save_Block(Block):
+    os.makedirs(Folder, exist_ok=True)
+    Path = os.path.join(Folder, f"block_{Block['Block']}.json")
+    with open(Path, "w") as F:
+        json.dump(Block, F, indent=4)
+    return Path
+
+def Load_All_Blocks():
+    Blocks = []
+    if not os.path.exists(Folder):
+        return Blocks
+    for File in sorted(os.listdir(Folder)):
+        if File.endswith(".json"):
+            try:
+                with open(os.path.join(Folder, File), "r") as F:
+                    Blocks.append(json.load(F))
+            except:
+                pass
+    Blocks.sort(key=lambda B: B["Block"])
+    return Blocks
+
+def Verify_Full_Chain(Verbose=False):
+    Blocks  = Load_All_Blocks()
+    Valid   = []
+    Corrupt = []
+
+    for I, Block in enumerate(Blocks):
+        if I == 0:
+            Ok = (
+                Block.get("Block") == 0 and
+                Block.get("Hash") == "0" * 64 and
+                Block.get("Prev_Hash", "") in ("", "0" * 64)
+            )
+            if Ok:
+                Valid.append(Block)
+                if Verbose:
+                    print(f"  Block {Block['Block']:>4} | Hash: {Block['Hash'][:16]}... | Genesis: OK")
+            else:
+                Corrupt.append(Block)
+                if Verbose:
+                    print(f"  Block {Block['Block']:>4} | Genesis: INVALID")
+        else:
+            Prev = Blocks[I - 1]
+            Recomputed = Calculate_Hash(Block)
+            Link_Ok    = (Block.get("Prev_Hash") == Prev.get("Hash"))
+            Hash_Ok    = (Recomputed == Block.get("Hash"))
+            if Link_Ok and Hash_Ok:
+                Valid.append(Block)
+                if Verbose:
+                    print(f"  Block {Block['Block']:>4} | Hash: {Block['Hash'][:16]}... | Chain Link: OK")
+            else:
+                Corrupt.append(Block)
+                if Verbose:
+                    if not Link_Ok:
+                        print(f"  Block {Block['Block']:>4} | Chain Link: BROKEN (Prev_Hash Mismatch)")
+                    else:
+                        print(f"  Block {Block['Block']:>4} | Hash: INVALID (Tampered)")
+
+    return Valid, Corrupt
 
 def Get_Local_Info():
     S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -52,7 +123,7 @@ def Recv_LP(Sock):
             return None
         Header += Chunk
     Length = int.from_bytes(Header, "big")
-    Buf = b""
+    Buf    = b""
     while len(Buf) < Length:
         Chunk = Sock.recv(min(65536, Length - len(Buf)))
         if not Chunk:
@@ -75,9 +146,9 @@ def Validate_Block(Block, Prev_Block):
     if Block["Prev_Hash"] != Prev_Block["Hash"]:
         return False, "Previous_Hash Mismatch"
     Block_Data = {
-        "Block": Block["Block"],
+        "Block":     Block["Block"],
         "Timestamp": Block["Timestamp"],
-        "Data": Block["Data"],
+        "Data":      Block["Data"],
         "Prev_Hash": Block["Prev_Hash"]
     }
     Recomputed = Calculate_Hash(Block_Data)
@@ -89,7 +160,7 @@ def Validate_Genesis(Block):
     if Block["Block"] != 0:
         return False, "Genesis Index Must Be 0"
     if Block["Prev_Hash"] != "" and Block["Prev_Hash"] != "0" * 64:
-        return False, "Genesis Previous_Hash Must Be Empty Or 64 Zeros"
+        return False, "Genesis Prev_Hash Must Be Empty Or 64 Zeros"
     if Block["Hash"] != "0" * 64:
         return False, "Genesis Hash Must Be 64 Zeros"
     return True, "Valid"
@@ -112,13 +183,13 @@ def Scan_Network(My_IP, Prefix, N_Threads=254):
             S.settimeout(None)
             with Lock:
                 Found.append((IP, S))
-                print(f"  [Peer Found]  Connected & Verified → {IP}")
+                print(f"  [Peer Found]  Connected & Verified -> {IP}")
         except Exception:
             pass
 
     Threads = []
-    for i in range(1, 255):
-        IP = f"{Prefix}{i}"
+    for I in range(1, 255):
+        IP = f"{Prefix}{I}"
         if IP in (My_IP, "127.0.0.1"):
             continue
         T = threading.Thread(target=Try, args=(IP,), daemon=True)
@@ -130,26 +201,14 @@ def Scan_Network(My_IP, Prefix, N_Threads=254):
 
     return Found
 
-def Request_Block_From_Peer(Sock, Index):
-    try:
-        Send_Msg(Sock, {"Type": "REQUEST_BLOCK", "Index": Index})
-        Sock.settimeout(5.0)
-        Reply = Recv_Msg(Sock)
-        Sock.settimeout(None)
-        if Reply and Reply.get("Type") == "BLOCK_REPLY":
-            return Reply.get("Block")
-    except Exception:
-        pass
-    return None
-
 def Majority_Block(Responses):
     Valid_Blocks = [B for B in Responses if B is not None]
     if not Valid_Blocks:
         return None
-    Counter  = collections.Counter(json.dumps(B, sort_keys=True) for B in Valid_Blocks)
+    Counter          = collections.Counter(json.dumps(B, sort_keys=True) for B in Valid_Blocks)
     Top_Json, Top_Count = Counter.most_common(1)[0]
-    N_Peers  = len(Responses)
-    Threshold = N_Peers // 2 + 1 if N_Peers > 1 else 1
+    N_Peers          = len(Responses)
+    Threshold        = N_Peers // 2 + 1 if N_Peers > 1 else 1
     if Top_Count >= Threshold:
         return json.loads(Top_Json)
     return None
@@ -201,7 +260,7 @@ def Collect_Chain_From_Peers(Peers):
         return []
 
     Max_Index = max(All_Blocks_By_Index.keys())
-    print(f"\n  [Consensus] Running Block-By-Block Majority Vote (0 → {Max_Index})...\n")
+    print(f"\n  [Consensus] Running Block-By-Block Majority Vote (0 -> {Max_Index})...\n")
 
     Agreed_Chain = []
 
@@ -239,7 +298,7 @@ def Apply_Agreed_Chain(Agreed_Chain):
     os.makedirs(Folder, exist_ok=True)
     for Block in Agreed_Chain:
         Path = Save_Block(Block)
-        print(f"  [Saved]  Block {Block['Block']} → {os.path.basename(Path)}")
+        print(f"  [Saved]  Block {Block['Block']} -> {os.path.basename(Path)}")
 
 def Receive_New_Blocks(Sock, IP):
     global Chain
@@ -262,7 +321,7 @@ def Receive_New_Blocks(Sock, IP):
             if not Local_Chain:
                 G_Ok, G_Reason = Validate_Genesis(Block)
                 if G_Ok:
-                    Path = Save_Block(Block)
+                    Path      = Save_Block(Block)
                     File_Hash = SHA256_File(Path)
                     print(f"\n  [Received]  Block 0 (Genesis)")
                     print(f"  [Hash]      {Block['Hash']}")
@@ -276,7 +335,7 @@ def Receive_New_Blocks(Sock, IP):
                     Prev = Chain[-1]
                 V_Ok, V_Reason = Validate_Block(Block, Prev)
                 if V_Ok:
-                    Path = Save_Block(Block)
+                    Path      = Save_Block(Block)
                     File_Hash = SHA256_File(Path)
                     print(f"\n  [Received]  Block {Block['Block']}")
                     print(f"  [Hash]      {Block['Hash']}")
@@ -299,7 +358,7 @@ def Start_RX():
     Banner("FerroFy RX — Peer Blockchain Node 🔗")
     print(f"  Node IP  :  {My_IP}")
     print(f"  Port     :  {Port}")
-    print(f"  Blocks   :  {Folder}")
+    print(f"  Blocks   :  {Folder}/")
     print("=" * BANNER_W)
 
     print("\n  [Local Chain] Verifying Local Blocks First...\n")

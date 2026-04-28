@@ -4,23 +4,20 @@ import sys
 import threading
 import time
 import json
+import hashlib
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from Chain_Verify import (
-    Calculate_Hash, Verify_Full_Chain, Save_Block_To_File as Save_Block,
-    Get_Missing_Indices, SHA256_Str, SHA256_File, Folder,
-    Create_Genesis_Block, Create_New_Block
-)
 
-Host = "0.0.0.0"
-Port = 5000
-Folder = "Blocks"
+Host      = "0.0.0.0"
+Port      = 5000
+Folder    = "Blocks"
+BANNER_W  = 60
 
 Connected_Clients = []
-Clients_Lock = threading.Lock()
+Clients_Lock      = threading.Lock()
 
 def Banner(Text, Char="="):
     print(Char * BANNER_W)
@@ -39,11 +36,14 @@ def Get_Local_IP():
     return IP
 
 def SHA256(Text):
-    return hashlib.sha256(Text.encode()).hexdigest()
+    return hashlib.sha256(Text.encode("utf-8")).hexdigest()
 
 def Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash):
     Raw = f"{Index}{Timestamp}{json.dumps(Data, sort_keys=True)}{Previous_Hash}"
     return SHA256(Raw)
+
+def Init_Folder():
+    os.makedirs(Folder, exist_ok=True)
 
 def Load_Chain():
     Chain = []
@@ -57,7 +57,7 @@ def Load_Chain():
                 Chain.append(Block)
         except:
             pass
-    Chain.sort(key=lambda B: B["Index"])
+    Chain.sort(key=lambda B: B["Block"])
     return Chain
 
 def Get_Last_Block(Chain):
@@ -66,40 +66,40 @@ def Get_Last_Block(Chain):
     return Chain[-1]
 
 def Build_Genesis_Block(Node_IP):
-    Index = 0
-    Timestamp = time.time()
-    Data = {"Message": "Genesis Block", "Node": Node_IP}
-    Previous_Hash = "0" * 64
-    Hash = Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash)
+    Index       = 0
+    Timestamp   = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    Data        = {"Message": "Genesis Block", "Node": Node_IP}
+    Prev_Hash   = "0" * 64
+    Hash        = Compute_Block_Hash(Index, Timestamp, Data, Prev_Hash)
     return {
-        "Index": Index,
+        "Block":     Index,
         "Timestamp": Timestamp,
-        "Data": Data,
-        "Previous_Hash": Previous_Hash,
-        "Hash": Hash
+        "Data":      Data,
+        "Prev_Hash": Prev_Hash,
+        "Hash":      Hash
     }
 
 def Build_Next_Block(Previous_Block, Message, Node_IP):
-    Index = Previous_Block["Index"] + 1
-    Timestamp = time.time()
-    Data = {
-        "Message": Message,
-        "Node": Node_IP,
-        "Block_Time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(Timestamp))
+    Index     = Previous_Block["Block"] + 1
+    Timestamp = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    Data      = {
+        "Message":    Message,
+        "Node":       Node_IP,
+        "Block_Time": Timestamp
     }
-    Previous_Hash = Previous_Block["Hash"]
-    Hash = Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash)
+    Prev_Hash = Previous_Block["Hash"]
+    Hash      = Compute_Block_Hash(Index, Timestamp, Data, Prev_Hash)
     return {
-        "Index": Index,
+        "Block":     Index,
         "Timestamp": Timestamp,
-        "Data": Data,
-        "Previous_Hash": Previous_Hash,
-        "Hash": Hash
+        "Data":      Data,
+        "Prev_Hash": Prev_Hash,
+        "Hash":      Hash
     }
 
 def Save_Block(Block):
-    File_Name = f"{Block['Index']}.json"
-    Path = os.path.join(Folder, File_Name)
+    File_Name = f"block_{Block['Block']}.json"
+    Path      = os.path.join(Folder, File_Name)
     with open(Path, "w") as F:
         json.dump(Block, F, indent=4)
     return File_Name
@@ -111,21 +111,21 @@ def Send_Length_Prefixed(Sock, Payload_Bytes):
 
 def Broadcast_Block(Block):
     Payload = json.dumps(Block).encode()
-    Dead = []
+    Dead    = []
     with Clients_Lock:
         for Entry in Connected_Clients:
             IP, Sock = Entry
             try:
                 Send_Length_Prefixed(Sock, Payload)
-                print(f"[Broadcast] Block {Block['Index']} -> {IP}")
+                print(f"  [Broadcast] Block {Block['Block']} -> {IP}")
             except:
-                print(f"[Dropped] Client {IP} Disconnected During Broadcast")
+                print(f"  [Dropped]   Client {IP} Disconnected During Broadcast")
                 Dead.append(Entry)
         for Entry in Dead:
             Connected_Clients.remove(Entry)
 
 def Handle_Client(Client_Socket, Addr, Chain):
-    print(f"\n[Connected] {Addr} - Verifying Handshake...")
+    print(f"\n  [Connected] {Addr[0]} — Verifying Handshake...")
 
     try:
         Client_Socket.settimeout(2.0)
@@ -134,15 +134,15 @@ def Handle_Client(Client_Socket, Addr, Chain):
         Client_Response = Client_Socket.recv(1024).decode()
 
         if Client_Response != "Mine_TX":
-            print(f"[Auth Failed] Wrong Password From {Addr}")
+            print(f"  [Auth Failed]  Wrong Password From {Addr[0]}")
             Client_Socket.close()
             return
 
         Client_Socket.settimeout(None)
-        print(f"[Auth Success] {Addr} Is Now A Verified Receiver")
+        print(f"  [Auth Success] {Addr[0]} Is Now A Verified Receiver")
 
     except:
-        print(f"[Auth Failed] Handshake Dropped With {Addr}")
+        print(f"  [Auth Failed]  Handshake Dropped With {Addr[0]}")
         Client_Socket.close()
         return
 
@@ -153,10 +153,10 @@ def Handle_Client(Client_Socket, Addr, Chain):
         for Block in Chain:
             Payload = json.dumps(Block).encode()
             Send_Length_Prefixed(Client_Socket, Payload)
-            print(f"[Sync] Sent Existing Block {Block['Index']} -> {Addr[0]}")
+            print(f"  [Sync] Sent Existing Block {Block['Block']} -> {Addr[0]}")
             time.sleep(0.1)
     except:
-        print(f"[Sync Failed] Could Not Send History To {Addr[0]}")
+        print(f"  [Sync Failed] Could Not Send History To {Addr[0]}")
 
 def Accept_Loop(Server_Socket, Chain):
     while True:
@@ -172,9 +172,15 @@ def Accept_Loop(Server_Socket, Chain):
         except:
             pass
 
-def Start_Server():
+def Start_TX():
     Init_Folder()
     Node_IP = Get_Local_IP()
+
+    Banner("FerroFy TX — Blockchain Transmitter Node 📡")
+    print(f"  Node IP  :  {Node_IP}")
+    print(f"  Port     :  {Port}")
+    print(f"  Blocks   :  {Folder}/")
+    print("=" * BANNER_W)
 
     Chain = Load_Chain()
 
@@ -182,19 +188,20 @@ def Start_Server():
         Genesis = Build_Genesis_Block(Node_IP)
         Chain.append(Genesis)
         File_Name = Save_Block(Genesis)
-        print(f"[Genesis] Created {File_Name} | Hash: {Genesis['Hash'][:16]}...")
+        print(f"\n  [Genesis]  Created {File_Name} | Hash: {Genesis['Hash'][:16]}...")
     else:
-        print(f"[Loaded] {len(Chain)} Existing Block(s) From '{Folder}/'")
+        print(f"\n  [Loaded]   {len(Chain)} Existing Block(s) From '{Folder}/'")
         Last = Get_Last_Block(Chain)
-        print(f"[Chain Tip] Block {Last['Index']} | Hash: {Last['Hash'][:16]}...")
+        print(f"  [Chain Tip] Block {Last['Block']} | Hash: {Last['Hash'][:16]}...")
 
     Server_Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Server_Socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     Server_Socket.bind((Host, Port))
     Server_Socket.listen(100)
 
-    print(f"[Server Running] IP: {Node_IP} | Port: {Port}")
-    print(f"[Ready] Type A Message And Press Enter To Mine A New Block\n")
+    print(f"\n  [Server]   Listening On {Node_IP}:{Port}")
+    print(f"  [Ready]    Type A Message And Press Enter To Mine A New Block\n")
+    print("=" * BANNER_W)
 
     Accept_Thread = threading.Thread(
         target=Accept_Loop,
@@ -205,18 +212,18 @@ def Start_Server():
 
     while True:
         try:
-            Message = input("📝 Message > ").strip()
+            Message = input("\n📝 Message > ").strip()
             if not Message:
-                print("[Skipped] Empty Message. Please Type Something.")
+                print("  [Skipped] Empty Message. Please Type Something.")
                 continue
 
             Last_Block = Get_Last_Block(Chain)
-            New_Block = Build_Next_Block(Last_Block, Message, Node_IP)
+            New_Block  = Build_Next_Block(Last_Block, Message, Node_IP)
             Chain.append(New_Block)
 
             File_Name = Save_Block(New_Block)
-            print(f"[Mined] {File_Name} | Index: {New_Block['Index']} | Hash: {New_Block['Hash'][:16]}...")
-            print(f"[Prev]  Chained To Block {Last_Block['Index']} | Hash: {Last_Block['Hash'][:16]}...")
+            print(f"  [Mined]  {File_Name} | Block: {New_Block['Block']} | Hash: {New_Block['Hash'][:16]}...")
+            print(f"  [Prev]   Chained To Block {Last_Block['Block']} | Hash: {Last_Block['Hash'][:16]}...")
 
             with Clients_Lock:
                 Client_Count = len(Connected_Clients)
@@ -224,10 +231,10 @@ def Start_Server():
             if Client_Count > 0:
                 Broadcast_Block(New_Block)
             else:
-                print("[Info] No RX Clients Connected. Block Saved Locally.\n")
+                print("  [Info]   No RX Clients Connected. Block Saved Locally.")
 
         except KeyboardInterrupt:
-            print("\n[Shutdown] TX Node Stopped.")
+            print("\n\n  [Shutdown] TX Node Stopped.")
             break
 
 Start_TX()

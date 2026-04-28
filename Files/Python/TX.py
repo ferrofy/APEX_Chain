@@ -15,15 +15,12 @@ from Chain_Verify import (
     Create_Genesis_Block, Create_New_Block
 )
 
-Host        = "0.0.0.0"
-Port        = 5000
-Handshake_A = "Mine_RX"
-Handshake_B = "Mine_TX"
-BANNER_W    = 60
+Host = "0.0.0.0"
+Port = 5000
+Folder = "Blocks"
 
-Connected_Peers = []
-Peers_Lock      = threading.Lock()
-Chain_Lock      = threading.Lock()
+Connected_Clients = []
+Clients_Lock = threading.Lock()
 
 def Banner(Text, Char="="):
     print(Char * BANNER_W)
@@ -41,212 +38,196 @@ def Get_Local_IP():
         S.close()
     return IP
 
-def Build_Genesis_Block(Node_IP):
-    return Create_Genesis_Block()
+def SHA256(Text):
+    return hashlib.sha256(Text.encode()).hexdigest()
 
-def Build_Next_Block(Prev_Block, Message, Node_IP):
-    return Create_New_Block(Message)
+def Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash):
+    Raw = f"{Index}{Timestamp}{json.dumps(Data, sort_keys=True)}{Previous_Hash}"
+    return SHA256(Raw)
 
-def Send_LP(Sock, Data_Bytes):
-    Length = len(Data_Bytes)
-    Sock.sendall(Length.to_bytes(4, "big") + Data_Bytes)
+def Load_Chain():
+    Chain = []
+    if not os.path.exists(Folder):
+        return Chain
+    Files = [F for F in os.listdir(Folder) if F.endswith(".json")]
+    for File in Files:
+        try:
+            with open(os.path.join(Folder, File), "r") as F:
+                Block = json.load(F)
+                Chain.append(Block)
+        except:
+            pass
+    Chain.sort(key=lambda B: B["Index"])
+    return Chain
 
-def Recv_LP(Sock):
-    Header = b""
-    while len(Header) < 4:
-        Chunk = Sock.recv(4 - len(Header))
-        if not Chunk:
-            return None
-        Header += Chunk
-    Length = int.from_bytes(Header, "big")
-    Buf = b""
-    while len(Buf) < Length:
-        Chunk = Sock.recv(min(65536, Length - len(Buf)))
-        if not Chunk:
-            return None
-        Buf += Chunk
-    return Buf
-
-def Send_Msg(Sock, Obj):
-    Send_LP(Sock, json.dumps(Obj).encode("utf-8"))
-
-def Recv_Msg(Sock):
-    Raw = Recv_LP(Sock)
-    if Raw is None:
+def Get_Last_Block(Chain):
+    if not Chain:
         return None
-    return json.loads(Raw.decode("utf-8"))
+    return Chain[-1]
+
+def Build_Genesis_Block(Node_IP):
+    Index = 0
+    Timestamp = time.time()
+    Data = {"Message": "Genesis Block", "Node": Node_IP}
+    Previous_Hash = "0" * 64
+    Hash = Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash)
+    return {
+        "Index": Index,
+        "Timestamp": Timestamp,
+        "Data": Data,
+        "Previous_Hash": Previous_Hash,
+        "Hash": Hash
+    }
+
+def Build_Next_Block(Previous_Block, Message, Node_IP):
+    Index = Previous_Block["Index"] + 1
+    Timestamp = time.time()
+    Data = {
+        "Message": Message,
+        "Node": Node_IP,
+        "Block_Time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(Timestamp))
+    }
+    Previous_Hash = Previous_Block["Hash"]
+    Hash = Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash)
+    return {
+        "Index": Index,
+        "Timestamp": Timestamp,
+        "Data": Data,
+        "Previous_Hash": Previous_Hash,
+        "Hash": Hash
+    }
+
+def Save_Block(Block):
+    File_Name = f"{Block['Index']}.json"
+    Path = os.path.join(Folder, File_Name)
+    with open(Path, "w") as F:
+        json.dump(Block, F, indent=4)
+    return File_Name
+
+def Send_Length_Prefixed(Sock, Payload_Bytes):
+    Length = len(Payload_Bytes)
+    Header = Length.to_bytes(4, byteorder="big")
+    Sock.sendall(Header + Payload_Bytes)
 
 def Broadcast_Block(Block):
-    Payload = json.dumps(Block).encode("utf-8")
-    Dead    = []
-    with Peers_Lock:
-        for (IP, Sock) in Connected_Peers:
+    Payload = json.dumps(Block).encode()
+    Dead = []
+    with Clients_Lock:
+        for Entry in Connected_Clients:
+            IP, Sock = Entry
             try:
-                Send_LP(Sock, Payload)
-                print(f"  [Broadcast] Block {Block['Block']} ──► {IP}")
-            except Exception:
-                print(f"  [Dropped]   Peer {IP} Disconnected During Broadcast")
-                Dead.append((IP, Sock))
+                Send_Length_Prefixed(Sock, Payload)
+                print(f"[Broadcast] Block {Block['Index']} -> {IP}")
+            except:
+                print(f"[Dropped] Client {IP} Disconnected During Broadcast")
+                Dead.append(Entry)
         for Entry in Dead:
-            Connected_Peers.remove(Entry)
+            Connected_Clients.remove(Entry)
 
-def Handle_Peer(Client_Sock, Addr, Chain):
-    IP = Addr[0]
-    print(f"\n  [Incoming]  Connection From {IP} — Verifying Handshake...")
+def Handle_Client(Client_Socket, Addr, Chain):
+    print(f"\n[Connected] {Addr} - Verifying Handshake...")
+
     try:
-        Client_Sock.settimeout(3.0)
-        Client_Sock.send(Handshake_A.encode())
-        Response = Client_Sock.recv(1024).decode()
-        if Response != Handshake_B:
-            print(f"  [Auth Fail] Wrong Token From {IP}")
-            Client_Sock.close()
+        Client_Socket.settimeout(2.0)
+        Client_Socket.send("Mine_RX".encode())
+
+        Client_Response = Client_Socket.recv(1024).decode()
+
+        if Client_Response != "Mine_TX":
+            print(f"[Auth Failed] Wrong Password From {Addr}")
+            Client_Socket.close()
             return
-        Client_Sock.settimeout(None)
-        print(f"  [Auth OK]   {IP} Is A Verified Peer")
-    except Exception:
-        print(f"  [Auth Fail] Handshake Dropped With {IP}")
-        Client_Sock.close()
+
+        Client_Socket.settimeout(None)
+        print(f"[Auth Success] {Addr} Is Now A Verified Receiver")
+
+    except:
+        print(f"[Auth Failed] Handshake Dropped With {Addr}")
+        Client_Socket.close()
         return
 
-    with Peers_Lock:
-        Connected_Peers.append((IP, Client_Sock))
-
-    with Chain_Lock:
-        Snapshot = list(Chain)
+    with Clients_Lock:
+        Connected_Clients.append((Addr[0], Client_Socket))
 
     try:
-        for Block in Snapshot:
-            Payload = json.dumps(Block).encode("utf-8")
-            Send_LP(Client_Sock, Payload)
-            print(f"  [Sync]      Sent Existing Block {Block['Block']} ──► {IP}")
-            time.sleep(0.05)
-    except Exception:
-        print(f"  [Sync Fail] Could Not Send History To {IP}")
+        for Block in Chain:
+            Payload = json.dumps(Block).encode()
+            Send_Length_Prefixed(Client_Socket, Payload)
+            print(f"[Sync] Sent Existing Block {Block['Index']} -> {Addr[0]}")
+            time.sleep(0.1)
+    except:
+        print(f"[Sync Failed] Could Not Send History To {Addr[0]}")
 
+def Accept_Loop(Server_Socket, Chain):
     while True:
         try:
-            Msg = Recv_Msg(Client_Sock)
-            if Msg is None:
-                break
-            if Msg.get("Type") == "REQUEST_BLOCK":
-                Idx = Msg.get("Index")
-                with Chain_Lock:
-                    Match = [B for B in Chain if B["Block"] == Idx]
-                if Match:
-                    Send_Msg(Client_Sock, {"Type": "BLOCK_REPLY", "Block": Match[0]})
-                else:
-                    Send_Msg(Client_Sock, {"Type": "BLOCK_REPLY", "Block": None})
-        except Exception:
-            break
-
-    with Peers_Lock:
-        Connected_Peers[:] = [(I, S) for (I, S) in Connected_Peers if I != IP]
-    print(f"  [Offline]   Peer {IP} Disconnected")
-
-def Accept_Loop(Server_Sock, Chain):
-    while True:
-        try:
-            Client_Sock, Addr = Server_Sock.accept()
-            Client_Sock.settimeout(None)
-            T = threading.Thread(
-                target=Handle_Peer,
-                args=(Client_Sock, Addr, Chain),
+            Client_Socket, Addr = Server_Socket.accept()
+            Client_Socket.settimeout(None)
+            Thread = threading.Thread(
+                target=Handle_Client,
+                args=(Client_Socket, Addr, Chain),
                 daemon=True
             )
-            T.start()
-        except Exception:
+            Thread.start()
+        except:
             pass
 
-def Pre_Mine_Verify(Chain):
-    Banner("Pre-Mine Chain Verification", "-")
-    _, Corrupt = Verify_Full_Chain(Verbose=True)
-    if Corrupt:
-        print(f"\n  [Warning]   {len(Corrupt)} Corrupt Block(s). Recommend Peer Correction.")
-    else:
-        print(f"\n  [OK]        Chain Integrity Confirmed Before Mining.")
-    print("-" * BANNER_W)
-    return len(Corrupt) == 0
-
-def Start_TX():
-    os.makedirs(Folder, exist_ok=True)
+def Start_Server():
+    Init_Folder()
     Node_IP = Get_Local_IP()
 
-    Banner("FerroFy TX — Origin Blockchain Node 🔗")
-    print(f"  Node IP  :  {Node_IP}")
-    print(f"  Port     :  {Port}")
-    print(f"  Blocks   :  {Folder}")
-    print("=" * BANNER_W)
-
-    Chain, Corrupt = Verify_Full_Chain(Verbose=True)
+    Chain = Load_Chain()
 
     if not Chain:
-        print("\n  [Genesis]   No Chain Found. Creating Genesis Block...")
         Genesis = Build_Genesis_Block(Node_IP)
-        Chain   = [Genesis]
-        Path    = Save_Block(Genesis)
-        print(f"  [Genesis]   Saved: {os.path.basename(Path)}")
-        print(f"  [Genesis]   Hash:  {Genesis['Hash']}")
+        Chain.append(Genesis)
+        File_Name = Save_Block(Genesis)
+        print(f"[Genesis] Created {File_Name} | Hash: {Genesis['Hash'][:16]}...")
     else:
-        Last = Chain[-1]
-        print(f"\n  [Loaded]    {len(Chain)} Block(s) | Tip → Block {Last['Block']} | Hash: {Last['Hash'][:20]}...")
-        if Corrupt:
-            print(f"  [Warning]   {len(Corrupt)} Corrupt Block(s) Detected At: {Corrupt}")
-            print(f"  [Info]      Connect RX Peers To Trigger Majority Correction.")
+        print(f"[Loaded] {len(Chain)} Existing Block(s) From '{Folder}/'")
+        Last = Get_Last_Block(Chain)
+        print(f"[Chain Tip] Block {Last['Index']} | Hash: {Last['Hash'][:16]}...")
 
-    print("=" * BANNER_W)
+    Server_Socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    Server_Socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    Server_Socket.bind((Host, Port))
+    Server_Socket.listen(100)
 
-    Server_Sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    Server_Sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    Server_Sock.bind((Host, Port))
-    Server_Sock.listen(100)
+    print(f"[Server Running] IP: {Node_IP} | Port: {Port}")
+    print(f"[Ready] Type A Message And Press Enter To Mine A New Block\n")
 
-    print(f"  [Listening] Ready. Accepting Peer Connections On Port {Port}...")
-    print(f"  [Mine]      Type A Message And Press Enter To Mine A New Block")
-    print("=" * BANNER_W + "\n")
-
-    Accept_T = threading.Thread(target=Accept_Loop, args=(Server_Sock, Chain), daemon=True)
-    Accept_T.start()
+    Accept_Thread = threading.Thread(
+        target=Accept_Loop,
+        args=(Server_Socket, Chain),
+        daemon=True
+    )
+    Accept_Thread.start()
 
     while True:
         try:
-            Message = input("  ✏  Message > ").strip()
+            Message = input("📝 Message > ").strip()
             if not Message:
-                print("  [Skip]      Empty Message. Type Something.\n")
+                print("[Skipped] Empty Message. Please Type Something.")
                 continue
 
-            Chain_OK = Pre_Mine_Verify(Chain)
+            Last_Block = Get_Last_Block(Chain)
+            New_Block = Build_Next_Block(Last_Block, Message, Node_IP)
+            Chain.append(New_Block)
 
-            if not Chain_OK:
-                print("  [Blocked]   Chain Has Corruption. Resolve Before Mining.\n")
-                continue
+            File_Name = Save_Block(New_Block)
+            print(f"[Mined] {File_Name} | Index: {New_Block['Index']} | Hash: {New_Block['Hash'][:16]}...")
+            print(f"[Prev]  Chained To Block {Last_Block['Index']} | Hash: {Last_Block['Hash'][:16]}...")
 
-            with Chain_Lock:
-                Last_Block = Chain[-1]
-                New_Block  = Build_Next_Block(Last_Block, Message, Node_IP)
-                Chain.append(New_Block)
+            with Clients_Lock:
+                Client_Count = len(Connected_Clients)
 
-            Path = Save_Block(New_Block)
-            File_Hash = SHA256_File(Path)
-
-            print(f"\n  [Mined]     Block {New_Block['Block']}")
-            print(f"  [Index]     {New_Block['Block']}")
-            print(f"  [Hash]      {New_Block['Hash']}")
-            print(f"  [Prev Hash] {New_Block['Prev_Hash'][:40]}...")
-            print(f"  [File SHA]  {File_Hash[:40]}...")
-            print(f"  [Saved]     {os.path.basename(Path)}\n")
-
-            with Peers_Lock:
-                N_Peers = len(Connected_Peers)
-
-            if N_Peers > 0:
+            if Client_Count > 0:
                 Broadcast_Block(New_Block)
-                print(f"  [Broadcast] Sent To {N_Peers} Peer(s)\n")
             else:
-                print("  [Local]     No Peers Connected. Block Saved Locally.\n")
+                print("[Info] No RX Clients Connected. Block Saved Locally.\n")
 
         except KeyboardInterrupt:
-            print("\n\n  [Shutdown]  TX Node Stopping.")
-            Server_Sock.close()
+            print("\n[Shutdown] TX Node Stopped.")
             break
 
 Start_TX()

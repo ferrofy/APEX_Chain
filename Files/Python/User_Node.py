@@ -7,8 +7,6 @@ import time
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-NODE_TYPE      = "USER_NODE"
-MY_PASS        = "User"
 VALIDATOR_PORT = 5001
 BANNER_W       = 62
 
@@ -63,48 +61,20 @@ def Get_My_IP():
     finally:
         S.close()
 
-def Probe_Validator(Val_IP):
-    try:
-        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        S.settimeout(3)
-        S.connect((Val_IP, VALIDATOR_PORT))
-        S.sendall(b"PROBE")
-        Reply = S.recv(16).decode("utf-8").strip()
-        S.close()
-        return Reply == "OK"
-    except Exception:
-        return False
-
-def Wait_For_Validator(Val_IP):
-    Retries = 0
-    while True:
-        Log("Handshake ►", f"Step 1 — Connecting To {Cyan(Val_IP)}:{VALIDATOR_PORT}", "cyan")
-        if Probe_Validator(Val_IP):
-            Log("Handshake ►", f"{Green('CONNECTED')}  ✓  Validator Is Online", "green")
-            return
-        Retries += 1
-        Log("Handshake ►", f"{Red('FAILED')} — Retry {Retries}  (Is Validator_Node.py Running?)", "red")
-        time.sleep(3)
-
 def Send_To_Validator(Val_IP, Wallet, Data):
     try:
+        Log("Connect", f"Connecting To Validator @ {Cyan(Val_IP)}:{VALIDATOR_PORT}...", "cyan")
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         S.settimeout(10)
-        Log("Handshake ►", f"Step 1 — Connecting To {Cyan(Val_IP)}:{VALIDATOR_PORT}", "cyan")
         S.connect((Val_IP, VALIDATOR_PORT))
-        Log("Handshake ►", f"Step 2 — Sending Password → {Yellow(MY_PASS)}", "cyan")
-        S.sendall(MY_PASS.encode("utf-8"))
-        Reply = S.recv(16).decode("utf-8").strip()
-        Log("Handshake ►", f"Step 3 — Response ← {Green(Reply) if Reply == 'OK' else Red(Reply)}", "cyan")
-        if Reply != "OK":
-            S.close()
-            return "ERROR:AUTH_REJECTED"
-        Log("Handshake ►", f"{Green('AUTHENTICATED')}  ✓  Sending Data...", "green")
+        Log("Connect", f"{Green('CONNECTED')}  ✓", "green")
+
         Packet = json.dumps({"Wallet": Wallet, "Data": Data}).encode("utf-8")
-        S.settimeout(None)
         S.sendall(Packet)
         S.shutdown(socket.SHUT_WR)
-        Log("Waiting", "Waiting For Validator Decision  (No Timeout)...", "yellow")
+
+        Log("Waiting", "Waiting For Validator Decision...", "yellow")
+        S.settimeout(None)
         Response = b""
         while True:
             Chunk = S.recv(4096)
@@ -113,6 +83,7 @@ def Send_To_Validator(Val_IP, Wallet, Data):
             Response += Chunk
         S.close()
         return Response.decode("utf-8")
+
     except ConnectionRefusedError:
         return "ERROR:NO_VALIDATOR"
     except Exception as E:
@@ -146,19 +117,15 @@ def Run_User_Node():
 
     My_IP = Get_My_IP()
     Section("This Node — User Node")
-    Info("My IP",      Cyan(My_IP))
-    Info("Password",   Yellow(MY_PASS))
+    Info("My IP", Cyan(My_IP))
     print()
 
-    Section("Setup — Enter Validator IP")
-    print(f"  {Dim('Validator node must be running.')}")
-    Val_IP = input(f"  {Bold(Yellow('Validator IP'))} > ").strip()
+    Section("Setup")
+    Val_IP = input(f"  {Bold(Yellow('Enter Validator IP'))} > ").strip()
     if not Val_IP:
         Val_IP = "127.0.0.1"
-    Info("Validator IP", Cyan(Val_IP))
-
-    Section("Handshaking With Validator")
-    Wait_For_Validator(Val_IP)
+    Info("Validator IP",   Cyan(Val_IP))
+    Info("Validator Port", str(VALIDATOR_PORT))
 
     Section("Wallet Setup")
     Wallet = Get_Wallet()
@@ -170,8 +137,6 @@ def Run_User_Node():
             Log("Warning", "No Fields Entered — Request Cancelled.", "yellow")
         else:
             Section("Sending Request To Validator")
-            Info("Validator", f"{Cyan(Val_IP)}:{VALIDATOR_PORT}")
-            Info("Wallet",    Cyan(Wallet[:16] + "...."))
             for K, V in Data.items():
                 Info(f"  {K}", Dim(V))
             print()
@@ -192,7 +157,7 @@ def Run_User_Node():
             break
 
     print()
-    Log("User Node", "Session Ended.  Goodbye.", "cyan")
+    Log("User Node", "Session Ended. Goodbye.", "cyan")
     print()
 
 if __name__ == "__main__":

@@ -12,17 +12,10 @@ import Chain_Verify
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-NODE_TYPE  = "DATA_NODE"
 HUB_PORT   = 5000
 SYNC_PORT  = 5003
 BANNER_W   = 62
 BLOCKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Blocks")
-
-PASS_MAP = {
-    "User":    "USER_NODE",
-    "Doc":     "VALIDATOR_NODE",
-    "Storage": "DATA_NODE",
-}
 
 def Clr(Code, Text):   return f"\033[{Code}m{Text}\033[0m"
 def Bold(T):           return Clr("1",  T)
@@ -47,7 +40,7 @@ def Print_Logo():
     for Line in LOGO:
         print(Magenta(Line))
     print(Bold(Magenta("  " + "─" * BANNER_W)))
-    print(Magenta("  Data Node  —  Central Hub  |  Port 5000  |  Start Me First!"))
+    print(Magenta("  Data Node  —  Block Storage  |  Port 5000  |  Start Me First!"))
     print(Magenta("  HackIndia Spark 7  |  North Region  |  Apex"))
     print(Bold(Magenta("  " + "─" * BANNER_W)))
     print()
@@ -58,6 +51,13 @@ def Section(Title):
     print(f"  {Bold(Yellow(Title))}")
     print(Dim("  " + "─" * BANNER_W))
 
+def Info(Label, Value):
+    print(f"  {Cyan(f'[{Label}]'):<36}  {Value}")
+
+def Log(Tag, Msg, Color="dim"):
+    Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan, "magenta": Magenta}
+    print(f"  {Colors.get(Color, Dim)(f'[{Tag}]'):<28}  {Msg}")
+
 def Get_My_IP():
     S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
@@ -67,27 +67,6 @@ def Get_My_IP():
         return "127.0.0.1"
     finally:
         S.close()
-
-def Ping_Validator(Val_IP, Val_Port=5001):
-    try:
-        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        S.settimeout(3)
-        S.connect((Val_IP, Val_Port))
-        S.sendall(b"PROBE")
-        Reply = S.recv(16).decode("utf-8").strip()
-        S.close()
-        return Reply == "OK"
-    except Exception:
-        return False
-
-def Info(Label, Value):
-    L = Cyan(f"[{Label}]")
-    print(f"  {L:<36}  {Value}")
-
-def Log(Tag, Msg, Color="dim"):
-    Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan, "magenta": Magenta}
-    Fn = Colors.get(Color, Dim)
-    print(f"  {Fn(f'[{Tag}]'):<28}  {Msg}")
 
 def SHA256_Str(Text):
     return hashlib.sha256(Text.encode("utf-8")).hexdigest()
@@ -111,10 +90,10 @@ def Next_Block_Index():
 def Get_Prev_Hash(Index):
     if Index == 0:
         return ""
-    Abs      = os.path.abspath(BLOCKS_DIR)
-    Prev_Path = os.path.join(Abs, f"block_{Index - 1}.json")
+    Abs = os.path.abspath(BLOCKS_DIR)
+    Path = os.path.join(Abs, f"block_{Index - 1}.json")
     try:
-        with open(Prev_Path, "r") as F:
+        with open(Path, "r") as F:
             return json.load(F).get("Hash", "")
     except Exception:
         return ""
@@ -129,76 +108,48 @@ def Write_Block(Payload):
         "Data":      Payload,
         "Prev_Hash": Prev_Hash,
     }
-    Block_Hash       = "0" * 64 if Index == 0 else Calculate_Hash(Block_Data)
-    Block_Data["Hash"] = Block_Hash
+    Block_Data["Hash"] = "0" * 64 if Index == 0 else Calculate_Hash(Block_Data)
     Abs  = os.path.abspath(BLOCKS_DIR)
     Path = os.path.join(Abs, f"block_{Index}.json")
     with open(Path, "w") as F:
         json.dump(Block_Data, F, indent=4)
-    return Index, Block_Hash, Path
+    return Index, Block_Data["Hash"], Path
 
-def Recv_All(Conn):
-    Raw = b""
-    Conn.settimeout(10)
+def Handle_Connection(Conn, Addr):
     try:
+        Log("Incoming", f"Connection From {Cyan(Addr[0])}", "cyan")
+        Conn.settimeout(None)
+        Raw = b""
         while True:
             Chunk = Conn.recv(4096)
             if not Chunk:
                 break
             Raw += Chunk
-    except socket.timeout:
-        pass
-    return Raw
 
-def Handle_Connection(Conn, Addr):
-    try:
-        Conn.settimeout(5)
-        Log("Handshake ◄", f"Step 1 — Incoming Connection From {Cyan(Addr[0])}", "cyan")
-        Raw_Pass = Conn.recv(256).decode("utf-8").strip()
-        Log("Handshake ◄", f"Step 2 — Password Received → {Yellow(Raw_Pass)}", "cyan")
-
-        if Raw_Pass == "WHO":
-            Reply = json.dumps({"Type": NODE_TYPE}).encode("utf-8")
-            Conn.sendall(Reply)
-            Log("Handshake ◄", f"WHO Probe — Replied With Node Type", "dim")
+        if not Raw.strip():
             return
 
-        Node_Role = PASS_MAP.get(Raw_Pass)
+        Packet   = json.loads(Raw.decode("utf-8"))
+        Decision = Packet.get("Decision", "").upper()
+        Wallet   = Packet.get("Wallet", "unknown")
+        Data     = Packet.get("Data", {})
 
-        if not Node_Role:
-            Log("Handshake ◄", f"Step 3 — {Red('REJECTED')}  Unknown Password", "red")
-            Conn.sendall(b"REJECT")
-            return
+        Section("Validator Decision Received")
+        Info("From",     Cyan(Addr[0]))
+        Info("Wallet",   Cyan(Wallet[:16] + "...."))
+        Info("Decision", Green("YES") if Decision == "YES" else Red("NO"))
 
-        Conn.sendall(b"OK")
-        Log("Handshake ◄", f"Step 3 — {Green('ACCEPTED')}  {Yellow(Node_Role)} From {Cyan(Addr[0])}", "green")
-
-        if Node_Role == "VALIDATOR_NODE":
-            Conn.settimeout(None)
-            Raw = Recv_All(Conn)
-            if not Raw:
-                return
-            Packet   = json.loads(Raw.decode("utf-8"))
-            Decision = Packet.get("Decision", "").upper()
-            Wallet   = Packet.get("Wallet", "unknown")
-            Data     = Packet.get("Data", {})
-
-            Section("Validator Decision Received")
-            Info("From",     f"{Cyan(Addr[0])}")
-            Info("Wallet",   Cyan(Wallet[:16] + "...."))
-            Info("Decision", Green("YES") if Decision == "YES" else Red("NO"))
-
-            if Decision == "YES":
-                Payload = {"Wallet": Wallet, **Data}
-                Index, Block_Hash, Path = Write_Block(Payload)
-                print()
-                Log("Block Stored", f"#{Index}  →  {Green(Path)}", "green")
-                Log("Hash",         Cyan(Block_Hash[:48] + "..."), "cyan")
-                Conn.sendall(b"STORED")
-            else:
-                print()
-                Log("Rejected", f"Block Discarded — Validator Said No", "yellow")
-                Conn.sendall(b"REJECTED")
+        if Decision == "YES":
+            Payload = {"Wallet": Wallet, **Data}
+            Index, Block_Hash, Path = Write_Block(Payload)
+            print()
+            Log("Block Stored", f"#{Index}  →  {Green(Path)}", "green")
+            Log("Hash",         Cyan(Block_Hash[:48] + "..."), "cyan")
+            Conn.sendall(b"STORED")
+        else:
+            print()
+            Log("Rejected", "Block Discarded — Validator Said No", "yellow")
+            Conn.sendall(b"REJECTED")
 
     except Exception as E:
         Log("Error", str(E), "red")
@@ -214,10 +165,9 @@ def Run_Data_Node():
     Chain_Verify.BLOCKS_DIR = Abs_Blocks
 
     Section("This Node — Data Node")
-    Info("My IP",       Cyan(My_IP))
-    Info("Hub Port",    str(HUB_PORT))
-    Info("Sync Port",   str(SYNC_PORT))
-    Info("Passwords",   f"Validator={Green('Doc')}  Other Data={Magenta('Storage')}") 
+    Info("My IP",      Cyan(My_IP))
+    Info("Hub Port",   str(HUB_PORT))
+    Info("Sync Port",  str(SYNC_PORT))
     print()
 
     Section("Chain Integrity Check")
@@ -225,14 +175,7 @@ def Run_Data_Node():
     Info("Blocks Dir",   Abs_Blocks)
     Info("Chain Height", str(len(Chain)))
 
-    Section("Setup — Enter Validator Node IP")
-    print(f"  {Dim('Validator will connect to you, but enter its IP to verify it is online.')}")
-    Val_IP = input(f"  {Bold(Yellow('Validator IP'))} > ").strip()
-    if not Val_IP:
-        Val_IP = "127.0.0.1"
-    Info("Validator IP", Cyan(Val_IP))
-
-    Section("Setup — Peer Data Node")
+    Section("Setup — Peer Data Node Sync")
     print(f"  {Dim('Connect to another Data Node for chain sync? (yes / no)')}")
     Peer_Ans = input(f"  {Bold(Yellow('Connect To Peer Data Node?'))} > ").strip().lower()
 
@@ -247,29 +190,18 @@ def Run_Data_Node():
             except Exception as E:
                 Log("Peer Sync", f"{Red('Failed')} — {E}", "red")
         else:
-            Log("Peer Sync", "No IP Entered — Skipping Peer Sync.", "yellow")
+            Log("Peer Sync", "No IP Entered — Skipping.", "yellow")
 
-    Section("Verifying Validator Is Online")
-    Retries = 0
-    while True:
-        Log("Ping ►", f"Checking Validator @ {Cyan(Val_IP)}:5001...", "cyan")
-        if Ping_Validator(Val_IP, 5001):
-            Log("Ping ►", f"{Green('REACHABLE')}  ✓  Validator Is Online", "green")
-            break
-        Retries += 1
-        Log("Ping ►", f"{Red('NOT REACHABLE')} — Retry {Retries}  (Start Validator_Node.py First)", "red")
-        time.sleep(3)
-
-    Section("Data Node Ready")
     Chain_Verify.Start_Sync_Server(Abs_Blocks)
-    Log("Sync",  f"Chain Sync Server On Port {SYNC_PORT}", "cyan")
+    Log("Sync", f"Chain Sync Server On Port {SYNC_PORT}", "cyan")
 
     Srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     Srv.bind(("0.0.0.0", HUB_PORT))
     Srv.listen(20)
 
-    Log("Ready", f"Central Hub Listening On Port {HUB_PORT}  —  Waiting For Validator...", "magenta")
+    Section("Data Node Ready")
+    Log("Ready", f"Listening On Port {HUB_PORT}  —  Waiting For Validator Decisions...", "magenta")
 
     while True:
         Conn, Addr = Srv.accept()

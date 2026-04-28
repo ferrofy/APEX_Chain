@@ -90,15 +90,8 @@ def Validate_Genesis(Block):
         return False, "Genesis Index Must Be 0"
     if Block["Prev_Hash"] != "" and Block["Prev_Hash"] != "0" * 64:
         return False, "Genesis Previous_Hash Must Be Empty Or 64 Zeros"
-    Block_Data = {
-        "Block": Block["Block"],
-        "Timestamp": Block["Timestamp"],
-        "Data": Block["Data"],
-        "Prev_Hash": Block["Prev_Hash"]
-    }
-    Recomputed = Calculate_Hash(Block_Data)
-    if Recomputed != Block["Hash"]:
-        return False, "Genesis Hash Recompute Failed"
+    if Block["Hash"] != "0" * 64:
+        return False, "Genesis Hash Must Be 64 Zeros"
     return True, "Valid"
 
 def Scan_Network(My_IP, Prefix, N_Threads=254):

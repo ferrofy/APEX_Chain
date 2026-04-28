@@ -80,6 +80,8 @@ def Load_All_Blocks():
     return Chain
 
 def Verify_Block_Hash(Block):
+    if Block["Block"] == 0:
+        return Block["Hash"] == "0" * 64, Block["Hash"]
     Block_Data = {
         "Block": Block["Block"],
         "Timestamp": Block["Timestamp"],

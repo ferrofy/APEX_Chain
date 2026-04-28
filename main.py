@@ -189,8 +189,11 @@ def Inspect_Chain(Folder):
             "Data": Block["Data"],
             "Prev_Hash": Block["Prev_Hash"]
         }
-        Recomp = Calculate_Hash(Block_Data)
-        H_OK = Recomp == Block["Hash"]
+        if Block["Block"] == 0:
+            H_OK = Block["Hash"] == "0" * 64
+        else:
+            Recomp = Calculate_Hash(Block_Data)
+            H_OK = Recomp == Block["Hash"]
         I_OK = Block["Block"] == i
         L_OK = (Block["Prev_Hash"] == "" or Block["Prev_Hash"] == "0" * 64) if i == 0 else (Block["Prev_Hash"] == Entries[i-1][0]["Hash"])
 
@@ -221,7 +224,7 @@ def Print_Chain_Summary(Chain):
     Info("Chain Height",    str(Last["Block"]))
     Info("Tip Hash",        Cyan(Last["Hash"][:36] + "..."))
     Info("Tip Prev-Hash",   Dim(Last["Prev_Hash"][:36] + "..."))
-    Ts = time.strftime("%Y-%m-%d  %H:%M:%S  UTC", time.gmtime(Last["Timestamp"]))
+    Ts = Last["Timestamp"]
     Info("Tip Timestamp",   Ts)
     Msg = Last["Data"].get("Message", "")
     if Msg:

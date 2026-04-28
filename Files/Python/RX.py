@@ -11,7 +11,7 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Chain_Verify import (
-    Compute_Block_Hash, Verify_Full_Chain, Save_Block,
+    Calculate_Hash, Verify_Full_Chain, Save_Block_To_File as Save_Block,
     Get_Missing_Indices, SHA256_Str, SHA256_File, Folder,
     Load_All_Blocks
 )
@@ -70,25 +70,33 @@ def Recv_Msg(Sock):
     return json.loads(Raw.decode("utf-8"))
 
 def Validate_Block(Block, Prev_Block):
-    if Block["Index"] != Prev_Block["Index"] + 1:
-        return False, f"Index Mismatch (Expected {Prev_Block['Index']+1}, Got {Block['Index']})"
-    if Block["Previous_Hash"] != Prev_Block["Hash"]:
+    if Block["Block"] != Prev_Block["Block"] + 1:
+        return False, f"Index Mismatch (Expected {Prev_Block['Block']+1}, Got {Block['Block']})"
+    if Block["Prev_Hash"] != Prev_Block["Hash"]:
         return False, "Previous_Hash Mismatch"
-    Recomputed = Compute_Block_Hash(
-        Block["Index"], Block["Timestamp"], Block["Data"], Block["Previous_Hash"]
-    )
+    Block_Data = {
+        "Block": Block["Block"],
+        "Timestamp": Block["Timestamp"],
+        "Data": Block["Data"],
+        "Prev_Hash": Block["Prev_Hash"]
+    }
+    Recomputed = Calculate_Hash(Block_Data)
     if Recomputed != Block["Hash"]:
         return False, "Hash Recompute Failed"
     return True, "Valid"
 
 def Validate_Genesis(Block):
-    if Block["Index"] != 0:
+    if Block["Block"] != 0:
         return False, "Genesis Index Must Be 0"
-    if Block["Previous_Hash"] != "0" * 64:
-        return False, "Genesis Previous_Hash Must Be 64 Zeros"
-    Recomputed = Compute_Block_Hash(
-        Block["Index"], Block["Timestamp"], Block["Data"], Block["Previous_Hash"]
-    )
+    if Block["Prev_Hash"] != "" and Block["Prev_Hash"] != "0" * 64:
+        return False, "Genesis Previous_Hash Must Be Empty Or 64 Zeros"
+    Block_Data = {
+        "Block": Block["Block"],
+        "Timestamp": Block["Timestamp"],
+        "Data": Block["Data"],
+        "Prev_Hash": Block["Prev_Hash"]
+    }
+    Recomputed = Calculate_Hash(Block_Data)
     if Recomputed != Block["Hash"]:
         return False, "Genesis Hash Recompute Failed"
     return True, "Valid"
@@ -170,7 +178,7 @@ def Collect_Chain_From_Peers(Peers):
                 if Raw is None:
                     break
                 Block = json.loads(Raw.decode("utf-8"))
-                if isinstance(Block, dict) and "Index" in Block:
+                if isinstance(Block, dict) and "Block" in Block:
                     Received.append(Block)
         except Exception:
             pass
@@ -194,7 +202,7 @@ def Collect_Chain_From_Peers(Peers):
     for IP, Blocks in Thread_Results.items():
         print(f"  [Peer {IP}]  Received {len(Blocks)} Block(s)")
         for B in Blocks:
-            All_Blocks_By_Index[B["Index"]].append(B)
+            All_Blocks_By_Index[B["Block"]].append(B)
 
     if not All_Blocks_By_Index:
         return []
@@ -238,7 +246,7 @@ def Apply_Agreed_Chain(Agreed_Chain):
     os.makedirs(Folder, exist_ok=True)
     for Block in Agreed_Chain:
         Path = Save_Block(Block)
-        print(f"  [Saved]  Block {Block['Index']} → {os.path.basename(Path)}")
+        print(f"  [Saved]  Block {Block['Block']} → {os.path.basename(Path)}")
 
 def Receive_New_Blocks(Sock, IP):
     global Chain
@@ -277,14 +285,14 @@ def Receive_New_Blocks(Sock, IP):
                 if V_Ok:
                     Path = Save_Block(Block)
                     File_Hash = SHA256_File(Path)
-                    print(f"\n  [Received]  Block {Block['Index']}")
+                    print(f"\n  [Received]  Block {Block['Block']}")
                     print(f"  [Hash]      {Block['Hash']}")
-                    print(f"  [Prev Hash] {Block['Previous_Hash'][:40]}...")
+                    print(f"  [Prev Hash] {Block['Prev_Hash'][:40]}...")
                     print(f"  [File SHA]  {File_Hash[:40]}...")
                     with Chain_Lock:
                         Chain.append(Block)
                 else:
-                    print(f"  [Rejected]  Block {Block['Index']} From {IP} | {V_Reason}")
+                    print(f"  [Rejected]  Block {Block['Block']} From {IP} | {V_Reason}")
 
         except Exception as E:
             print(f"  [Error]     Lost Connection To {IP} | {E}")

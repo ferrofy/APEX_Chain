@@ -81,8 +81,8 @@ def SHA256_File(Path):
 def SHA256_Str(Text):
     return hashlib.sha256(Text.encode("utf-8")).hexdigest()
 
-def Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash):
-    Raw = f"{Index}{Timestamp}{json.dumps(Data, sort_keys=True)}{Previous_Hash}"
+def Calculate_Hash(Block_Data):
+    Raw = json.dumps(Block_Data, sort_keys=True)
     return SHA256_Str(Raw)
 
 def Load_Local_Chain(Folder):
@@ -90,8 +90,8 @@ def Load_Local_Chain(Folder):
     if not os.path.exists(Folder):
         return Chain
     Files = sorted(
-        [F for F in os.listdir(Folder) if F.endswith(".json")],
-        key=lambda F: int(F.replace(".json", ""))
+        [F for F in os.listdir(Folder) if F.startswith("block_") and F.endswith(".json")],
+        key=lambda F: int(F.replace("block_", "").replace(".json", ""))
     )
     for File in Files:
         Path = os.path.join(Folder, File)
@@ -183,22 +183,25 @@ def Inspect_Chain(Folder):
     for i, (Block, Path) in enumerate(Entries):
         File   = os.path.basename(Path)
         F_Hash = SHA256_File(Path)
-        Recomp = Compute_Block_Hash(
-            Block["Index"], Block["Timestamp"],
-            Block["Data"],  Block["Previous_Hash"]
-        )
+        Block_Data = {
+            "Block": Block["Block"],
+            "Timestamp": Block["Timestamp"],
+            "Data": Block["Data"],
+            "Prev_Hash": Block["Prev_Hash"]
+        }
+        Recomp = Calculate_Hash(Block_Data)
         H_OK = Recomp == Block["Hash"]
-        I_OK = Block["Index"] == i
-        L_OK = (Block["Previous_Hash"] == "0" * 64) if i == 0 else (Block["Previous_Hash"] == Entries[i-1][0]["Hash"])
+        I_OK = Block["Block"] == i
+        L_OK = (Block["Prev_Hash"] == "" or Block["Prev_Hash"] == "0" * 64) if i == 0 else (Block["Prev_Hash"] == Entries[i-1][0]["Hash"])
 
         All_OK = H_OK and L_OK and I_OK
         Flag   = Green("   OK  ") if All_OK else Red("  FAIL ")
         H_Txt  = Green("  OK") if H_OK else Red("FAIL")
         L_Txt  = Green("  OK") if L_OK else Red("FAIL")
 
-        print(f"  {Block['Index']:>4}  {File:<10}  {F_Hash[:12]}...  {H_Txt}  {L_Txt}  {Flag}")
+        print(f"  {Block['Block']:>4}  {File:<10}  {F_Hash[:12]}...  {H_Txt}  {L_Txt}  {Flag}")
         if not All_OK:
-            Corrupt.append(Block["Index"])
+            Corrupt.append(Block["Block"])
 
     print()
     if Corrupt:
@@ -215,9 +218,9 @@ def Print_Chain_Summary(Chain):
     Section("Blockchain State")
     Last = Chain[-1]
     Info("Total Blocks",    str(len(Chain)))
-    Info("Chain Height",    str(Last["Index"]))
+    Info("Chain Height",    str(Last["Block"]))
     Info("Tip Hash",        Cyan(Last["Hash"][:36] + "..."))
-    Info("Tip Prev-Hash",   Dim(Last["Previous_Hash"][:36] + "..."))
+    Info("Tip Prev-Hash",   Dim(Last["Prev_Hash"][:36] + "..."))
     Ts = time.strftime("%Y-%m-%d  %H:%M:%S  UTC", time.gmtime(Last["Timestamp"]))
     Info("Tip Timestamp",   Ts)
     Msg = Last["Data"].get("Message", "")

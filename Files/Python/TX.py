@@ -10,8 +10,9 @@ if hasattr(sys.stdout, "reconfigure"):
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from Chain_Verify import (
-    Compute_Block_Hash, Verify_Full_Chain, Save_Block,
-    Get_Missing_Indices, SHA256_Str, SHA256_File, Folder
+    Calculate_Hash, Verify_Full_Chain, Save_Block_To_File as Save_Block,
+    Get_Missing_Indices, SHA256_Str, SHA256_File, Folder,
+    Create_Genesis_Block, Create_New_Block
 )
 
 Host        = "0.0.0.0"
@@ -41,36 +42,10 @@ def Get_Local_IP():
     return IP
 
 def Build_Genesis_Block(Node_IP):
-    Index         = 0
-    Timestamp     = time.time()
-    Data          = {"Message": "Genesis Block", "Node": Node_IP}
-    Previous_Hash = "0" * 64
-    Hash          = Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash)
-    return {
-        "Index":         Index,
-        "Timestamp":     Timestamp,
-        "Data":          Data,
-        "Previous_Hash": Previous_Hash,
-        "Hash":          Hash
-    }
+    return Create_Genesis_Block()
 
 def Build_Next_Block(Prev_Block, Message, Node_IP):
-    Index         = Prev_Block["Index"] + 1
-    Timestamp     = time.time()
-    Data          = {
-        "Message":    Message,
-        "Node":       Node_IP,
-        "Block_Time": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(Timestamp))
-    }
-    Previous_Hash = Prev_Block["Hash"]
-    Hash          = Compute_Block_Hash(Index, Timestamp, Data, Previous_Hash)
-    return {
-        "Index":         Index,
-        "Timestamp":     Timestamp,
-        "Data":          Data,
-        "Previous_Hash": Previous_Hash,
-        "Hash":          Hash
-    }
+    return Create_New_Block(Message)
 
 def Send_LP(Sock, Data_Bytes):
     Length = len(Data_Bytes)
@@ -108,7 +83,7 @@ def Broadcast_Block(Block):
         for (IP, Sock) in Connected_Peers:
             try:
                 Send_LP(Sock, Payload)
-                print(f"  [Broadcast] Block {Block['Index']} ──► {IP}")
+                print(f"  [Broadcast] Block {Block['Block']} ──► {IP}")
             except Exception:
                 print(f"  [Dropped]   Peer {IP} Disconnected During Broadcast")
                 Dead.append((IP, Sock))
@@ -143,7 +118,7 @@ def Handle_Peer(Client_Sock, Addr, Chain):
         for Block in Snapshot:
             Payload = json.dumps(Block).encode("utf-8")
             Send_LP(Client_Sock, Payload)
-            print(f"  [Sync]      Sent Existing Block {Block['Index']} ──► {IP}")
+            print(f"  [Sync]      Sent Existing Block {Block['Block']} ──► {IP}")
             time.sleep(0.05)
     except Exception:
         print(f"  [Sync Fail] Could Not Send History To {IP}")
@@ -156,7 +131,7 @@ def Handle_Peer(Client_Sock, Addr, Chain):
             if Msg.get("Type") == "REQUEST_BLOCK":
                 Idx = Msg.get("Index")
                 with Chain_Lock:
-                    Match = [B for B in Chain if B["Index"] == Idx]
+                    Match = [B for B in Chain if B["Block"] == Idx]
                 if Match:
                     Send_Msg(Client_Sock, {"Type": "BLOCK_REPLY", "Block": Match[0]})
                 else:
@@ -213,7 +188,7 @@ def Start_TX():
         print(f"  [Genesis]   Hash:  {Genesis['Hash']}")
     else:
         Last = Chain[-1]
-        print(f"\n  [Loaded]    {len(Chain)} Block(s) | Tip → Block {Last['Index']} | Hash: {Last['Hash'][:20]}...")
+        print(f"\n  [Loaded]    {len(Chain)} Block(s) | Tip → Block {Last['Block']} | Hash: {Last['Hash'][:20]}...")
         if Corrupt:
             print(f"  [Warning]   {len(Corrupt)} Corrupt Block(s) Detected At: {Corrupt}")
             print(f"  [Info]      Connect RX Peers To Trigger Majority Correction.")
@@ -253,10 +228,10 @@ def Start_TX():
             Path = Save_Block(New_Block)
             File_Hash = SHA256_File(Path)
 
-            print(f"\n  [Mined]     Block {New_Block['Index']}")
-            print(f"  [Index]     {New_Block['Index']}")
+            print(f"\n  [Mined]     Block {New_Block['Block']}")
+            print(f"  [Index]     {New_Block['Block']}")
             print(f"  [Hash]      {New_Block['Hash']}")
-            print(f"  [Prev Hash] {New_Block['Previous_Hash'][:40]}...")
+            print(f"  [Prev Hash] {New_Block['Prev_Hash'][:40]}...")
             print(f"  [File SHA]  {File_Hash[:40]}...")
             print(f"  [Saved]     {os.path.basename(Path)}\n")
 

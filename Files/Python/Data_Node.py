@@ -131,22 +131,25 @@ def Recv_All(Conn):
 def Handle_Connection(Conn, Addr):
     try:
         Conn.settimeout(5)
+        Log("Handshake ◄", f"Step 1 — Incoming Connection From {Cyan(Addr[0])}", "cyan")
         Raw_Pass = Conn.recv(256).decode("utf-8").strip()
+        Log("Handshake ◄", f"Step 2 — Password Received → {Yellow(Raw_Pass)}", "cyan")
 
         if Raw_Pass == "WHO":
             Reply = json.dumps({"Type": NODE_TYPE}).encode("utf-8")
             Conn.sendall(Reply)
+            Log("Handshake ◄", f"WHO Probe — Replied With Node Type", "dim")
             return
 
         Node_Role = PASS_MAP.get(Raw_Pass)
 
         if not Node_Role:
-            Log("Auth Fail", f"Wrong Password From {Addr[0]} → '{Raw_Pass}'", "red")
+            Log("Handshake ◄", f"Step 3 — {Red('REJECTED')}  Unknown Password", "red")
             Conn.sendall(b"REJECT")
             return
 
         Conn.sendall(b"OK")
-        Log("Auth OK", f"{Yellow(Node_Role)}  ←  {Cyan(Addr[0])}", "cyan")
+        Log("Handshake ◄", f"Step 3 — {Green('ACCEPTED')}  {Yellow(Node_Role)} From {Cyan(Addr[0])}", "green")
 
         if Node_Role == "VALIDATOR_NODE":
             Conn.settimeout(None)

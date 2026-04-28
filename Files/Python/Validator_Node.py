@@ -59,17 +59,21 @@ def Log(Tag, Msg, Color="dim"):
     print(f"  {Fn(f'[{Tag}]'):<28}  {Msg}")
 
 def Handshake_With_Data_Node(Data_IP):
+    Log("Handshake ►", f"Step 1 — Connecting To Data Node @ {Cyan(Data_IP)}:{HUB_PORT}", "cyan")
     try:
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         S.settimeout(5)
         S.connect((Data_IP, HUB_PORT))
+        Log("Handshake ►", f"Step 2 — Sending Password → {Yellow(MY_PASS)}", "cyan")
         S.sendall(MY_PASS.encode("utf-8"))
         Reply = S.recv(16).decode("utf-8").strip()
+        Log("Handshake ►", f"Step 3 — Response ← {Green(Reply) if Reply == 'OK' else Red(Reply)}", "cyan")
         if Reply == "OK":
             return S
         S.close()
         return None
-    except Exception:
+    except Exception as E:
+        Log("Handshake ►", f"Step — Exception: {Red(str(E))}", "red")
         return None
 
 def Connect_And_Wait_For_Data_Node(Data_IP):
@@ -77,11 +81,11 @@ def Connect_And_Wait_For_Data_Node(Data_IP):
     while True:
         S = Handshake_With_Data_Node(Data_IP)
         if S:
-            Log("Handshake", f"{Green('OK')}  ✓  Data Node At {Data_IP}:{HUB_PORT}  Password={Yellow(MY_PASS)}", "green")
+            Log("Handshake", f"{Green('CONNECTED')}  ✓  Data Node Ready", "green")
             S.close()
             return
         Retries += 1
-        Log("Handshake", f"{Red('Failed')} — Retry {Retries}... (Start Data_Node.py First)", "red")
+        Log("Handshake", f"{Red('FAILED')} — Retry {Retries}  (Is Data_Node.py Running?)", "red")
         time.sleep(3)
 
 def Forward_To_Data(Data_IP, Packet):
@@ -108,12 +112,22 @@ def Handle_User(Conn, Addr, Data_IP):
     try:
         Conn.settimeout(5)
         Pass_In = Conn.recv(64).decode("utf-8").strip()
+
+        if Pass_In == "PROBE":
+            Log("Handshake ◄", f"Ping From {Cyan(Addr[0])} — Responding OK", "dim")
+            Conn.sendall(b"OK")
+            return
+
+        Log("Handshake ◄", f"Step 1 — Connection From {Cyan(Addr[0])}", "cyan")
+        Log("Handshake ◄", f"Step 2 — Password Received → {Yellow(Pass_In)}", "cyan")
+
         if Pass_In != "User":
-            Log("Auth Fail", f"Wrong User Password From {Addr[0]} → '{Pass_In}'", "red")
+            Log("Handshake ◄", f"Step 3 — {Red('REJECTED')}  Wrong Password", "red")
             Conn.sendall(b"REJECT")
             return
+
         Conn.sendall(b"OK")
-        Log("User Auth", f"{Green('OK')}  ←  {Cyan(Addr[0])}", "cyan")
+        Log("Handshake ◄", f"Step 3 — {Green('ACCEPTED')}  User Authenticated", "green")
 
         Conn.settimeout(None)
         Raw = b""
@@ -125,6 +139,10 @@ def Handle_User(Conn, Addr, Data_IP):
                 Raw += Chunk
         except Exception:
             pass
+
+        if not Raw.strip():
+            Log("Handle User", "Empty Payload — Probe Connection Closed", "dim")
+            return
 
         Packet = json.loads(Raw.decode("utf-8"))
         Wallet = Packet.get("Wallet", "unknown")

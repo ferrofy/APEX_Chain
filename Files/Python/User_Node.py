@@ -62,7 +62,7 @@ def Check_Validator(Val_IP):
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         S.settimeout(3)
         S.connect((Val_IP, VALIDATOR_PORT))
-        S.sendall(MY_PASS.encode("utf-8"))
+        S.sendall(b"PROBE")
         Reply = S.recv(16).decode("utf-8").strip()
         S.close()
         return Reply == "OK"
@@ -72,29 +72,35 @@ def Check_Validator(Val_IP):
 def Wait_For_Validator(Val_IP):
     Retries = 0
     while True:
+        Log("Handshake ►", f"Step 1 — Connecting To Validator @ {Cyan(Val_IP)}:{VALIDATOR_PORT}", "cyan")
         if Check_Validator(Val_IP):
-            Log("Handshake", f"{Green('OK')}  ✓  Validator At {Val_IP}:{VALIDATOR_PORT}  Password={Yellow(MY_PASS)}", "green")
+            Log("Handshake ►", f"{Green('CONNECTED')}  ✓  Validator Is Online", "green")
             return
         Retries += 1
-        Log("Handshake", f"{Red('Failed')} — Retry {Retries}... (Start Validator_Node.py First)", "red")
+        Log("Handshake ►", f"{Red('FAILED')} — Retry {Retries}  (Is Validator_Node.py Running?)", "red")
         time.sleep(3)
 
 def Send_To_Validator(Val_IP, Wallet, Data):
     try:
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         S.settimeout(5)
+        Log("Handshake ►", f"Step 1 — Connecting To Validator @ {Cyan(Val_IP)}:{VALIDATOR_PORT}", "cyan")
         S.connect((Val_IP, VALIDATOR_PORT))
+        Log("Handshake ►", f"Step 2 — Sending Password → {Yellow(MY_PASS)}", "cyan")
         S.sendall(MY_PASS.encode("utf-8"))
         Reply = S.recv(16).decode("utf-8").strip()
+        Log("Handshake ►", f"Step 3 — Response ← {Green(Reply) if Reply == 'OK' else Red(Reply)}", "cyan")
         if Reply != "OK":
             S.close()
             return "ERROR:AUTH_REJECTED"
 
+        Log("Handshake ►", f"{Green('AUTHENTICATED')}  ✓  Sending Data...", "green")
         Packet = json.dumps({"Wallet": Wallet, "Data": Data}).encode("utf-8")
-        S.settimeout(60)
+        S.settimeout(None)
         S.sendall(Packet)
         S.shutdown(socket.SHUT_WR)
 
+        Log("Waiting", f"Waiting For Validator Decision  (No Timeout)...", "yellow")
         Response = b""
         while True:
             Chunk = S.recv(4096)

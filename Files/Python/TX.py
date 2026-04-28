@@ -80,7 +80,7 @@ def Load_Chain():
                 Chain_Data.append(Block)
         except Exception:
             pass
-    Chain_Data.sort(key=lambda B: B["Block"])
+    Chain_Data.sort(key=lambda B: B.get("Block", 0))
     return Chain_Data
 
 def Get_Last_Block(Chain_Data):
@@ -314,3 +314,7 @@ def Start_TX():
                     RX_Sock = None
             else:
                 Add_Log("Not Connected To RX — Block Saved Locally.", "dim")
+
+
+if __name__ == "__main__":
+    Start_TX()

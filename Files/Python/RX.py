@@ -56,9 +56,6 @@ def Get_Local_IP():
 def SHA256(Text_In):
     return hashlib.sha256(Text_In.encode("utf-8")).hexdigest()
 
-def SHA256_File(Path):
-    with open(Path, "rb") as F:
-        return hashlib.sha256(F.read()).hexdigest()
 
 def Calculate_Hash(Block):
     Raw = f"{Block['Block']}{Block['Timestamp']}{json.dumps(Block['Data'], sort_keys=True)}{Block['Prev_Hash']}"
@@ -160,7 +157,7 @@ def Make_Chain_Table():
 
     for B in Visible:
         Msg    = B["Data"].get("Message", "—")
-        Status = "[green]✓ Valid[/green]" if B["Block"] == 0 else "[green]✓ Valid[/green]"
+        Status = "[yellow]⛏ Genesis[/yellow]" if B["Block"] == 0 else "[green]✓ Valid[/green]"
         Table_Out.add_row(
             str(B["Block"]),
             B["Timestamp"],
@@ -237,8 +234,7 @@ def Handle_TX(Client_Socket, Addr, Node_IP):
             if not Local_Chain:
                 G_Ok, G_Reason = Validate_Genesis(Block)
                 if G_Ok:
-                    Path      = Save_Block(Block)
-                    File_Hash = SHA256_File(Path)
+                    Save_Block(Block)
                     Add_Log(f"⛏  Genesis Block Received From {Addr[0]}", "yellow")
                     Add_Log(f"   Hash: {Block['Hash'][:32]}…", "dim")
                     with Chain_Lock:
@@ -250,8 +246,7 @@ def Handle_TX(Client_Socket, Addr, Node_IP):
                     Prev = Chain[-1]
                 V_Ok, V_Reason = Validate_Block(Block, Prev)
                 if V_Ok:
-                    Path      = Save_Block(Block)
-                    File_Hash = SHA256_File(Path)
+                    Save_Block(Block)
                     Add_Log(f"✓ Block {Block['Block']} Received From {Addr[0]}", "green")
                     Add_Log(f"   Hash: {Block['Hash'][:32]}…", "dim")
                     with Chain_Lock:
@@ -316,3 +311,7 @@ def Start_RX():
         Add_Log("RX Node Shutting Down…", "red")
         Server_Socket.close()
         Console_Out.print("\n  [bold red]RX Node Stopped.[/bold red]\n")
+
+
+if __name__ == "__main__":
+    Start_RX()

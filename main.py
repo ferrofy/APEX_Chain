@@ -1,92 +1,55 @@
-import sys
 import os
+import sys
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-from rich.console import Console
-from rich.panel   import Panel
-from rich.text    import Text
-from rich.align   import Align
-from rich.rule    import Rule
 
-Console_Out = Console()
+ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
+PYTHON_DIR = os.path.join(ROOT_DIR, "Files", "Python")
+if PYTHON_DIR not in sys.path:
+    sys.path.insert(0, PYTHON_DIR)
 
-def Show_Splash():
-    Console_Out.clear()
-    Console_Out.print()
 
-    Title = Text()
-    Title.append("APEX ⛓  ", style="bold yellow")
-    Title.append("  Blockchain Node System  ", style="bold cyan")
-    Title.append("⛓  ", style="bold yellow")
+def show_menu():
+    print()
+    print("=" * 72)
+    print("FerroFy - Three Node Blockchain Data Network")
+    print("=" * 72)
+    print("1. User Node  - sends data to a Doc Node")
+    print("2. Doc Node   - verifies User data and forwards it to Data")
+    print("3. Data Node  - decentralized blockchain storage and repair")
+    print("Q. Quit")
+    print("=" * 72)
 
-    Subtitle = Text(
-        "Decentralized  ·  Peer-To-Peer  ·  SHA-256 Verified",
-        style="dim white",
-        justify="center",
-    )
 
-    Console_Out.print(Panel(
-        Align.center(Title),
-        border_style="cyan",
-        padding=(0, 4),
-    ))
-    Console_Out.print(Align.center(Subtitle))
-    Console_Out.print()
-    Console_Out.print(Rule(style="dim cyan"))
-    Console_Out.print()
-
-    Console_Out.print(Panel(
-        "\n"
-        "  [bold cyan]\\[1][/bold cyan]  [white]TX Node[/white]  "
-        "[dim]—  Transmitter  ·  Mine & Send Blocks[/dim]\n\n"
-        "  [bold magenta]\\[2][/bold magenta]  [white]RX Node[/white]  "
-        "[dim]—  Receiver    ·  Listen & Validate Blocks[/dim]\n\n"
-        "  [bold red]\\[Q][/bold red]  [white]Quit[/white]\n",
-        title="[bold white]Select Node Type[/bold white]",
-        border_style="bright_blue",
-        padding=(0, 2),
-    ))
-    Console_Out.print()
-
-def Main():
+def main():
     while True:
-        Show_Splash()
-        Choice = Console_Out.input("  [bold yellow]>[/bold yellow] ").strip().lower()
+        show_menu()
+        choice = input("> ").strip().lower()
 
-        if Choice == "1":
-            Console_Out.print()
-            Console_Out.print(Panel(
-                "  [cyan]Starting TX Node...[/cyan]",
-                border_style="cyan",
-                padding=(0, 2),
-            ))
-            Console_Out.print()
-            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Files", "Python"))
-            from Files.Python import TX
-            TX.Start_TX()
+        if choice == "1":
+            from User_Node import Start_User
+
+            Start_User()
+            break
+        if choice == "2":
+            from Doc_Node import Start_Doc
+
+            Start_Doc()
+            break
+        if choice == "3":
+            from Data_Node import Start_Data
+
+            Start_Data()
+            break
+        if choice in {"q", "quit", "exit"}:
+            print("Goodbye.")
             break
 
-        elif Choice == "2":
-            Console_Out.print()
-            Console_Out.print(Panel(
-                "  [magenta]Starting RX Node...[/magenta]",
-                border_style="magenta",
-                padding=(0, 2),
-            ))
-            Console_Out.print()
-            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "Files", "Python"))
-            from Files.Python import RX
-            RX.Start_RX()
-            break
+        print("Invalid choice. Enter 1, 2, 3, or Q.")
 
-        elif Choice in ("q", "quit", "exit"):
-            Console_Out.print("\n  [bold red]Goodbye.[/bold red]\n")
-            break
 
-        else:
-            Console_Out.print("  [red]Invalid Choice. Please Enter 1, 2, Or Q.[/red]\n")
-            Console_Out.input("  [dim]Press Enter To Continue...[/dim]")
-
-Main()
+if __name__ == "__main__":
+    main()

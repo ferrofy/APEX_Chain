@@ -1,198 +1,182 @@
-# FerroFy - Three Node Blockchain Data Network
+# FerroFy - Local WiFi Blockchain System
 
-HackIndia Spark 7 | North Region | Apex
-
-FerroFy is a terminal-based Python project that models three machines in a
-small decentralized data pipeline:
+FerroFy is a three-node Python system for one local WiFi network.
 
 ```text
-User Node  ->  Doc Node  ->  Data Node Network
+User Node  ->  Doc Node  ->  Data Node Blockchain Network
 ```
 
-- **User Node** sends data or text-file content to a Doc Node.
-- **Doc Node** verifies the payload, creates a document record, stores a local
-  audit copy, and forwards the record to a Data Node.
-- **Data Node** mines the record into a blockchain, shares blocks with peer
-  Data Nodes, detects bad local blocks, and repairs its chain from peer
-  consensus.
+## Nodes
 
-The project uses only Python standard-library networking, JSON packets, SHA-256
-hashing, and a small proof-of-work loop.
+| Node | UI | Job |
+| --- | --- | --- |
+| User Node | `Files/Python/User_Node.pyw` GUI | Enters data and sends it to one Doc Node |
+| Doc Node | `Files/Python/Doc_Node.pyw` GUI | Reviews User data and clicks Yes / No |
+| Data Node | `Files/Python/main.py` option 3, or `Files/Python/Data_Node.py` | Stores approved records as hash-linked blocks and syncs with other Data Nodes |
 
-## Project Files
+The old two-node TX/RX design was removed so the project now follows only this
+three-node architecture.
 
-| File | Role |
-| --- | --- |
-| `main.py` | Launcher for User, Doc, and Data node modes |
-| `Files/Python/User_Node.py` | Sends user data to a Doc Node |
-| `Files/Python/Doc_Node.py` | Verifies user payloads and forwards documents to Data |
-| `Files/Python/Data_Node.py` | Blockchain storage node with peer sync and repair |
-| `Files/Python/Blockchain.py` | Shared block creation, validation, mining, and consensus helpers |
-| `Files/Python/Protocol.py` | Shared TCP JSON packet protocol |
-| `Blocks/DataNode_<port>/` | Block files for each Data Node |
-| `Files/Documents/` | Doc Node audit records |
+## Data Fields
 
-Legacy `TX.py` and `RX.py` files are still present, but the current launcher
-uses the three-node architecture above.
+The User Node asks for:
 
-## Ports
+- Name
+- Problem
+- Symptoms
+- Disease
+- Date
+- Solution
+- Extra Notes
 
-| Node | Default Port |
+## Default Ports
+
+| Node | Port |
 | --- | --- |
 | Doc Node | `5100` |
 | Data Node | `5200` |
 
-User Nodes do not listen on a port. They connect to a Doc Node only when
-sending data.
+On multiple Data Nodes, use different ports such as `5200`, `5201`, `5202`.
 
-## Run Locally
+## Running On Local WiFi
 
-Open three terminals from the project folder.
-
-### 1. Start a Data Node
+Use the WiFi IPv4 address of each machine. The apps show the detected WiFi IP
+when they start. On Windows you can also run:
 
 ```bash
-python main.py
+ipconfig
+```
+
+Look for the IPv4 address under the active WiFi adapter.
+
+## 1. Start Data Nodes
+
+Run from the project folder:
+
+```bash
+python Files/Python/main.py
 ```
 
 Choose `3`.
 
-Suggested answers:
+It asks:
 
 ```text
-Data node port [5200] >
-Peer data nodes (comma host:port, blank for none) >
+This Data Node listen IP [0.0.0.0] >
+This Data Node port [5200] >
+How many Doc Nodes to connect / allow [0] >
+Doc Node 1 IP[:port] >
+How many Data Node peers to connect / allow [0] >
+Data Node peer 1 IP[:port] >
 Block folder [Blocks/DataNode_5200] >
 ```
 
-### 2. Start a Doc Node
+Use `0.0.0.0` for listen IP if you want the node to listen on all local network
+interfaces.
 
-```bash
-python main.py
-```
-
-Choose `2`.
-
-Suggested answers:
+For a second Data Node on the same machine:
 
 ```text
-Doc node port [5100] >
-Data node addresses [127.0.0.1:5200] >
-Document folder [Files/Documents] >
-```
-
-### 3. Start a User Node
-
-```bash
-python main.py
-```
-
-Choose `1`.
-
-Suggested answers:
-
-```text
-Doc node address [127.0.0.1:5100] >
-Sender name [User] >
-title> My First Record
-data> Hello blockchain
-```
-
-The User Node sends the payload to the Doc Node. The Doc Node verifies it and
-forwards it to the Data Node. The Data Node mines a block and stores it as JSON.
-
-## Run Multiple Data Nodes
-
-To test decentralized repair on one machine, open two Data Nodes with different
-ports and folders.
-
-Terminal A:
-
-```text
-Data node port [5200] >
-Peer data nodes (comma host:port, blank for none) >
-Block folder [Blocks/DataNode_5200] >
-```
-
-Terminal B:
-
-```text
-Data node port [5200] > 5201
-Peer data nodes (comma host:port, blank for none) > 127.0.0.1:5200
+This Data Node port [5200] > 5201
+How many Data Node peers to connect / allow [0] > 1
+Data Node peer 1 IP[:port] > 127.0.0.1:5200
 Block folder [Blocks/DataNode_5201] >
 ```
 
-Point the Doc Node at either Data Node:
+For another machine, use that machine's WiFi IP instead of `127.0.0.1`.
 
-```text
-Data node addresses [127.0.0.1:5200] > 127.0.0.1:5200
+## 2. Start Doc Node
+
+Run:
+
+```bash
+pythonw Files/Python/Doc_Node.pyw
 ```
 
-When a Data Node mines a block, it proposes that block to its peers.
+You can also run `python Files/Python/main.py` and choose `2`.
 
-## Blockchain Repair
-
-Every Data Node validates its local chain every 15 seconds. If a block hash,
-previous hash, index, schema, or proof-of-work value is wrong, the Data Node
-asks its peer Data Nodes for their chains.
-
-Repair selection works like this:
-
-1. Ask peers for their full chains.
-2. Reject invalid peer chains.
-3. Group valid chains by their block hashes.
-4. Select the most agreed valid chain, preferring longer chains when votes tie.
-5. Replace the local chain when the local chain is invalid or behind.
-
-You can also trigger repair manually from a running Data Node:
+The Doc Node asks:
 
 ```text
-data> repair
+Doc Node Listen IP: 0.0.0.0
+Doc Node Port: 5100
+User Node IP: <the User machine WiFi IP>
+How Many Data Nodes: <number>
+Data Node 1 IP:Port: <data node WiFi IP>:5200
 ```
 
-## Packet Flow
+When User data arrives, the Doc GUI shows the fields and waits for:
+
+- `Yes / Approve`: stores an audit JSON in `Files/Documents/` and forwards to Data Nodes.
+- `No / Reject`: sends rejection back to the User Node.
+
+## 3. Start User Node
+
+Run:
+
+```bash
+pythonw Files/Python/User_Node.pyw
+```
+
+or run `python Files/Python/main.py` and choose `1`.
+
+The User Node asks only for:
 
 ```text
-USER_DATA
-  User Node
-    -> Doc Node
-
-DOC_SUBMIT
-  Doc Node
-    -> Data Node
-
-BLOCK_PROPOSE / GET_CHAIN
-  Data Node
-    <-> Peer Data Nodes
+Doc Node IP
+Doc Node Port
 ```
 
-## Block Shape
+Fill the data fields and click `Send To Doc Node`. If the Doc Node is not
+online yet, the User Node retries automatically every few seconds until it
+connects or you click `Stop Retry`.
+
+## Blockchain Behavior
+
+Data Nodes do not mine and do not use nonce values. A block is simply:
 
 ```json
 {
-  "schema": "ferrofy.block.v2",
+  "schema": "ferrofy.localwifi.block.v1",
   "index": 1,
   "timestamp": "2026-04-28T16:30:00Z",
-  "previous_hash": "0000...",
-  "difficulty": 2,
-  "nonce": 42,
-  "creator": "data:192.168.1.20:5200",
+  "previous_hash": "abc123...",
+  "creator": "doc:192.168.1.10:5100",
   "data": {
-    "kind": "document_record",
-    "document": {
-      "doc_id": "abc123...",
-      "title": "My First Record",
-      "content_hash": "..."
-    }
+    "kind": "approved_doc_record",
+    "doc_id": "...",
+    "document": {}
   },
-  "hash": "00..."
+  "hash": "sha256-of-the-block"
 }
+```
+
+Each Data Node checks:
+
+- block hash matches the block contents
+- block index is sequential
+- `previous_hash` matches the previous block
+- peer Data Nodes have the same chain
+
+If a Data Node finds a bad or different block, it asks connected Data Nodes for
+their chains. Valid chains are grouped by block hashes, and the chain with the
+most votes wins. If votes tie, the node picks the longest valid chain and uses a
+deterministic hash tie-break.
+
+Manual commands inside a Data Node:
+
+```text
+data> status
+data> chain
+data> peers
+data> repair
+data> quit
 ```
 
 ## Requirements
 
 - Python 3.8+
-- No external packages required
+- Standard library only: `socket`, `json`, `hashlib`, `threading`, `tkinter`
 
 ## License
 

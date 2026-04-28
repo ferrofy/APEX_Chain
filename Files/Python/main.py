@@ -6,8 +6,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-ROOT_DIR = os.path.dirname(os.path.abspath(__file__))
-PYTHON_DIR = os.path.join(ROOT_DIR, "Files", "Python")
+PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
 if PYTHON_DIR not in sys.path:
     sys.path.insert(0, PYTHON_DIR)
 
@@ -15,11 +14,11 @@ if PYTHON_DIR not in sys.path:
 def show_menu():
     print()
     print("=" * 72)
-    print("FerroFy - Three Node Blockchain Data Network")
+    print("FerroFy - Local WiFi Blockchain System")
     print("=" * 72)
-    print("1. User Node  - sends data to a Doc Node")
-    print("2. Doc Node   - verifies User data and forwards it to Data")
-    print("3. Data Node  - decentralized blockchain storage and repair")
+    print("1. User Node  - dark GUI form, sends data to one Doc Node")
+    print("2. Doc Node   - dark GUI approval station")
+    print("3. Data Node  - terminal blockchain storage and peer majority repair")
     print("Q. Quit")
     print("=" * 72)
 

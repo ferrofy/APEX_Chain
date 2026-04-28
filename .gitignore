@@ -1,6 +1,15 @@
 # Logs
 logs
 *.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Runtime blockchain data
+Blocks/
+Files/Documents/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

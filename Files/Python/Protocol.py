@@ -43,8 +43,9 @@ def recv_packet(sock):
     return json.loads(payload.decode("utf-8"))
 
 
-def request(host, port, packet, timeout=8.0):
-    with socket.create_connection((host, int(port)), timeout=timeout) as sock:
+def request(host, port, packet, timeout=8.0, connect_timeout=None):
+    connect_timeout = timeout if connect_timeout is None else connect_timeout
+    with socket.create_connection((host, int(port)), timeout=connect_timeout) as sock:
         sock.settimeout(timeout)
         send_packet(sock, packet)
         return recv_packet(sock)

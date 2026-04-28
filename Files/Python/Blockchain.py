@@ -4,11 +4,10 @@ import os
 
 from Protocol import now_utc
 
-SCHEMA = "ferrofy.block.v2"
-DEFAULT_DIFFICULTY = 2
+SCHEMA = "ferrofy.localwifi.block.v1"
 ZERO_HASH = "0" * 64
-GENESIS_CREATOR = "ferrofy:genesis"
 GENESIS_TIMESTAMP = "2026-04-28T00:00:00Z"
+GENESIS_CREATOR = "ferrofy:local-wifi-genesis"
 
 
 def canonical_json(value):
@@ -20,66 +19,51 @@ def sha256_text(value):
 
 
 def calculate_hash(block):
-    material = {key: value for key, value in block.items() if key != "hash"}
-    return sha256_text(canonical_json(material))
+    block_material = {key: value for key, value in block.items() if key != "hash"}
+    return sha256_text(canonical_json(block_material))
 
 
-def mine_block(index, previous_hash, data, creator, difficulty=DEFAULT_DIFFICULTY, timestamp=None):
+def create_block(index, previous_hash, data, creator, timestamp=None):
     block = {
         "schema": SCHEMA,
         "index": int(index),
         "timestamp": timestamp or now_utc(),
         "previous_hash": previous_hash,
-        "difficulty": int(difficulty),
-        "nonce": 0,
         "creator": creator,
         "data": data,
     }
-
-    prefix = "0" * int(difficulty)
-    while True:
-        block["hash"] = calculate_hash(block)
-        if block["hash"].startswith(prefix):
-            return block
-        block["nonce"] += 1
+    block["hash"] = calculate_hash(block)
+    return block
 
 
-def create_genesis_block(creator, difficulty=DEFAULT_DIFFICULTY):
-    return mine_block(
+def create_genesis_block():
+    return create_block(
         0,
         ZERO_HASH,
         {
             "kind": "genesis",
-            "message": "FerroFy decentralized data chain started",
+            "message": "FerroFy local WiFi blockchain started",
         },
         GENESIS_CREATOR,
-        difficulty,
         GENESIS_TIMESTAMP,
     )
 
 
-def create_next_block(previous_block, data, creator, difficulty=DEFAULT_DIFFICULTY):
-    return mine_block(
-        previous_block["index"] + 1,
+def create_next_block(previous_block, data, creator, timestamp=None):
+    return create_block(
+        int(previous_block["index"]) + 1,
         previous_block["hash"],
         data,
         creator,
-        difficulty,
+        timestamp,
     )
 
 
 def validate_block(block, previous_block=None):
-    required = {
-        "schema",
-        "index",
-        "timestamp",
-        "previous_hash",
-        "difficulty",
-        "nonce",
-        "creator",
-        "data",
-        "hash",
-    }
+    if not isinstance(block, dict):
+        return False, "block must be an object"
+
+    required = {"schema", "index", "timestamp", "previous_hash", "creator", "data", "hash"}
     missing = sorted(required.difference(block))
     if missing:
         return False, "missing fields: " + ", ".join(missing)
@@ -89,20 +73,15 @@ def validate_block(block, previous_block=None):
 
     try:
         index = int(block["index"])
-        difficulty = int(block["difficulty"])
     except Exception:
-        return False, "index and difficulty must be integers"
+        return False, "index must be an integer"
 
     if index < 0:
         return False, "index cannot be negative"
-    if difficulty < 0 or difficulty > 5:
-        return False, "difficulty must be between 0 and 5"
 
     expected_hash = calculate_hash(block)
     if block["hash"] != expected_hash:
         return False, "hash does not match block contents"
-    if not block["hash"].startswith("0" * difficulty):
-        return False, "proof of work does not match difficulty"
 
     if previous_block is None:
         if index != 0:
@@ -139,7 +118,7 @@ def first_invalid_block(chain):
     for block in chain:
         ok, reason = validate_block(block, previous)
         if not ok:
-            return block.get("index", "?"), reason
+            return block.get("index", "?") if isinstance(block, dict) else "?", reason
         previous = block
     return None, "valid"
 
@@ -179,9 +158,9 @@ def save_block(folder, block):
 def save_chain(folder, chain):
     os.makedirs(folder, exist_ok=True)
 
-    wanted = {block_file_name(block["index"]) for block in chain}
+    expected_files = {block_file_name(block["index"]) for block in chain}
     for file_name in os.listdir(folder):
-        if file_name.endswith(".json") and file_name not in wanted:
+        if file_name.endswith(".json") and file_name not in expected_files:
             os.remove(os.path.join(folder, file_name))
 
     for block in chain:
@@ -194,34 +173,40 @@ def chain_signature(chain):
 
 def chain_summary(chain):
     ok, reason = validate_chain(chain)
-    tip = chain[-1]["hash"] if chain else ZERO_HASH
     return {
         "valid": ok,
         "reason": reason,
         "length": len(chain),
-        "tip_hash": tip,
+        "tip_hash": chain[-1]["hash"] if chain else ZERO_HASH,
     }
 
 
-def select_consensus_chain(chains):
-    valid_chains = []
-    for source, chain in chains:
+def select_consensus_chain(candidates):
+    valid = []
+    for source, chain in candidates:
         ok, _reason = validate_chain(chain)
         if ok:
-            valid_chains.append((source, chain))
+            valid.append((source, chain))
 
-    if not valid_chains:
+    if not valid:
         return None, "no valid chains found"
 
     grouped = {}
-    for source, chain in valid_chains:
+    for source, chain in valid:
         signature = chain_signature(chain)
         grouped.setdefault(signature, {"sources": [], "chain": chain})
         grouped[signature]["sources"].append(source)
 
     best = max(
         grouped.values(),
-        key=lambda item: (len(item["sources"]), len(item["chain"]), item["chain"][-1]["hash"]),
+        key=lambda item: (
+            len(item["sources"]),
+            len(item["chain"]),
+            item["chain"][-1]["hash"],
+        ),
     )
+    total = len(valid)
+    votes = len(best["sources"])
+    mode = "majority" if votes > total / 2 else "best available"
     sources = ", ".join(best["sources"])
-    return [dict(block) for block in best["chain"]], f"selected from {sources}"
+    return [dict(block) for block in best["chain"]], f"{mode} {votes}/{total} from {sources}"

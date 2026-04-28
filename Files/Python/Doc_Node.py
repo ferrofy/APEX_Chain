@@ -3,57 +3,97 @@ import os
 import socket
 import threading
 import time
+import tkinter as tk
+from tkinter import messagebox, ttk
 
 from Blockchain import canonical_json, sha256_text
-from Protocol import (
-    get_local_ip,
-    now_utc,
-    parse_peer_list,
-    recv_packet,
-    request,
-    send_packet,
+from Gui_Theme import (
+    BlockchainHeader,
+    COLORS,
+    append_log,
+    install_dark_theme,
+    make_panel,
+    set_text_value,
+    status_color,
+    style_text_widget,
 )
+from Protocol import get_local_ip, now_utc, parse_host_port, recv_packet, request, send_packet
 
-HOST = "0.0.0.0"
 DEFAULT_DOC_PORT = 5100
 DEFAULT_DATA_PORT = 5200
 DEFAULT_DOC_FOLDER = os.path.join("Files", "Documents")
+PENDING_TIMEOUT_SECONDS = 900
+
+FORM_KEYS = [
+    ("name", "Name"),
+    ("problem", "Problem"),
+    ("symptoms", "Symptoms"),
+    ("disease", "Disease"),
+    ("date", "Date"),
+    ("solution", "Solution"),
+    ("extra_notes", "Extra Notes"),
+]
 
 
-def ask_int(label, default):
-    raw = input(f"{label} [{default}] > ").strip()
-    if not raw:
-        return int(default)
-    return int(raw)
+class PendingRequest:
+    def __init__(self, request_id, payload, address):
+        self.request_id = request_id
+        self.payload = payload
+        self.address = address
+        self.event = threading.Event()
+        self.response = None
 
 
 class DocNode:
-    def __init__(self, port, data_nodes, folder=DEFAULT_DOC_FOLDER):
+    def __init__(
+        self,
+        listen_host,
+        port,
+        allowed_user_ip,
+        data_nodes,
+        folder=DEFAULT_DOC_FOLDER,
+        on_pending=None,
+        on_log=None,
+    ):
+        self.listen_host = listen_host or "0.0.0.0"
         self.port = int(port)
+        self.allowed_user_ip = allowed_user_ip.strip()
         self.data_nodes = list(data_nodes)
         self.folder = folder
         self.local_ip = get_local_ip()
         self.node_id = f"doc:{self.local_ip}:{self.port}"
+        self.on_pending = on_pending
+        self.on_log = on_log
+
         self.stop_event = threading.Event()
         self.server_socket = None
-        self.doc_count = 0
-        self.doc_lock = threading.Lock()
+        self.pending_lock = threading.Lock()
+        self.active_pending = None
+        self.approved_count = 0
+        self.rejected_count = 0
 
     def log(self, message):
-        print(f"[{time.strftime('%H:%M:%S')}] {message}")
+        line = f"[{time.strftime('%H:%M:%S')}] {message}"
+        if self.on_log:
+            self.on_log(line)
+        else:
+            print(line)
 
     def start(self):
         os.makedirs(self.folder, exist_ok=True)
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((HOST, self.port))
-        self.server_socket.listen(20)
+        self.server_socket.bind((self.listen_host, self.port))
+        self.server_socket.listen(10)
         self.server_socket.settimeout(1.0)
 
         threading.Thread(target=self.accept_loop, daemon=True).start()
 
-        self.log(f"Doc Node running at {self.local_ip}:{self.port}")
-        self.log(f"Forwarding verified documents to: {self.data_node_text()}")
+        self.log(f"Doc Node listening on {self.listen_host}:{self.port}")
+        self.log(f"WiFi IP detected as {self.local_ip}")
+        self.log(f"Allowed User Node IP: {self.allowed_user_ip or 'any'}")
+        self.log(f"Data Nodes: {self.data_node_text()}")
+        self.probe_data_nodes()
 
     def stop(self):
         self.stop_event.set()
@@ -72,11 +112,7 @@ class DocNode:
             except OSError:
                 break
 
-            threading.Thread(
-                target=self.handle_client,
-                args=(client, address),
-                daemon=True,
-            ).start()
+            threading.Thread(target=self.handle_client, args=(client, address), daemon=True).start()
 
     def handle_client(self, client, address):
         try:
@@ -86,10 +122,10 @@ class DocNode:
                 return
 
             packet_type = packet.get("type")
-            if packet_type == "USER_DATA":
-                response = self.handle_user_data(packet, address)
-            elif packet_type == "PING":
+            if packet_type == "PING":
                 response = {"ok": True, "type": "PONG", "node_id": self.node_id}
+            elif packet_type == "USER_DATA":
+                response = self.handle_user_data(packet, address)
             else:
                 response = {"ok": False, "error": f"unknown packet type: {packet_type}"}
 
@@ -106,74 +142,126 @@ class DocNode:
                 pass
 
     def handle_user_data(self, packet, address):
+        if not self.user_allowed(address[0]):
+            self.log(f"Rejected User Node {address[0]} because it is not the configured IP")
+            return {"ok": False, "error": "this Doc Node is configured for another User Node IP"}
+
         payload = packet.get("payload")
         if not isinstance(payload, dict):
             return {"ok": False, "error": "payload must be an object"}
 
-        title = str(payload.get("title", "")).strip()
-        content = str(payload.get("content", "")).strip()
-        if not content:
-            return {"ok": False, "error": "content cannot be empty"}
+        if not str(payload.get("name", "")).strip() or not str(payload.get("problem", "")).strip():
+            return {"ok": False, "error": "name and problem are required"}
 
-        document = self.build_document_record(payload, address)
-        self.save_document(document)
+        with self.pending_lock:
+            if self.active_pending is not None:
+                return {"ok": False, "error": "Doc Node is reviewing another User request"}
+            pending = PendingRequest(
+                sha256_text(canonical_json({"payload": payload, "time": now_utc()}))[:16],
+                payload,
+                address,
+            )
+            self.active_pending = pending
 
-        data_response = self.forward_to_data(document)
-        if not data_response.get("ok"):
-            return {
+        self.log(f"Received User request {pending.request_id} from {address[0]}")
+        if self.on_pending:
+            self.on_pending(pending)
+
+        if not pending.event.wait(PENDING_TIMEOUT_SECONDS):
+            with self.pending_lock:
+                if self.active_pending is pending:
+                    self.active_pending = None
+            self.log(f"Request {pending.request_id} timed out waiting for approval")
+            return {"ok": False, "error": "Doc Node approval timed out"}
+
+        with self.pending_lock:
+            if self.active_pending is pending:
+                self.active_pending = None
+
+        return pending.response or {"ok": False, "error": "request closed without decision"}
+
+    def user_allowed(self, ip):
+        allowed = self.allowed_user_ip
+        if not allowed or allowed in {"*", "any", "0.0.0.0"}:
+            return True
+        return ip == allowed
+
+    def approve_pending(self, request_id, approved, note=""):
+        with self.pending_lock:
+            pending = self.active_pending
+            if not pending or pending.request_id != request_id:
+                return False, "pending request not found"
+
+        if not approved:
+            pending.response = {
                 "ok": False,
-                "type": "DOC_ACK",
-                "doc_id": document["doc_id"],
-                "error": data_response.get("error", "data node rejected document"),
+                "type": "DOC_REJECTED",
+                "request_id": pending.request_id,
+                "error": note or "Doc Node rejected the request",
             }
+            pending.event.set()
+            self.rejected_count += 1
+            self.log(f"Rejected request {pending.request_id}")
+            return True, "rejected"
 
-        with self.doc_lock:
-            self.doc_count += 1
+        document = self.build_document_record(pending.payload, pending.address, note)
+        self.save_document(document)
+        data_result = self.forward_to_data(document)
 
-        self.log(
-            f"Verified '{title or document['doc_id']}' -> block "
-            f"{data_response.get('block_index')} on {data_response.get('data_node')}"
-        )
-        return {
-            "ok": True,
-            "type": "DOC_ACK",
-            "doc_id": document["doc_id"],
-            "content_hash": document["content_hash"],
-            "data_node": data_response.get("data_node"),
-            "block_index": data_response.get("block_index"),
-            "block_hash": data_response.get("block_hash"),
-            "message": "Document verified by Doc Node and stored by Data Node",
-        }
+        if data_result["ok"]:
+            self.approved_count += 1
+            pending.response = {
+                "ok": True,
+                "type": "DOC_APPROVED",
+                "request_id": pending.request_id,
+                "doc_id": document["doc_id"],
+                "content_hash": document["content_hash"],
+                "block_index": data_result.get("block_index"),
+                "block_hash": data_result.get("block_hash"),
+                "data_nodes": data_result.get("data_nodes", []),
+                "message": "Doc Node approved and Data Node stored the record",
+            }
+            self.log(f"Approved request {pending.request_id} as doc {document['doc_id']}")
+        else:
+            pending.response = {
+                "ok": False,
+                "type": "DOC_APPROVED_DATA_FAILED",
+                "request_id": pending.request_id,
+                "doc_id": document["doc_id"],
+                "error": data_result.get("error", "all Data Nodes failed"),
+            }
+            self.log(f"Approved request {pending.request_id}, but Data Nodes failed")
 
-    def build_document_record(self, payload, address):
-        received_at = now_utc()
-        content = str(payload.get("content", "")).strip()
-        title = str(payload.get("title", "")).strip() or "Untitled"
-        sender = payload.get("sender") or "anonymous-user"
-        content_hash = sha256_text(content)
+        pending.event.set()
+        return True, "approved"
+
+    def build_document_record(self, payload, address, doctor_note):
+        approved_at = now_utc()
+        content_hash = sha256_text(canonical_json({key: payload.get(key, "") for key, _label in FORM_KEYS}))
         doc_seed = canonical_json(
             {
-                "sender": sender,
-                "title": title,
                 "content_hash": content_hash,
-                "received_at": received_at,
+                "approved_at": approved_at,
                 "doc_node": self.node_id,
+                "user": payload.get("user_node", ""),
             }
         )
 
         return {
             "doc_id": sha256_text(doc_seed)[:24],
-            "title": title,
-            "sender": sender,
-            "source_user_node": packet_source(payload, address),
+            "status": "approved_by_doc_node",
             "doc_node": self.node_id,
-            "received_at": received_at,
-            "content": content,
+            "source_user_ip": address[0],
+            "source_user_node": payload.get("user_node", f"user:{address[0]}"),
+            "received_sent_at": payload.get("sent_at", ""),
+            "approved_at": approved_at,
+            "doctor_note": doctor_note,
             "content_hash": content_hash,
-            "status": "verified_by_doc_node",
+            "fields": {key: payload.get(key, "") for key, _label in FORM_KEYS},
         }
 
     def save_document(self, document):
+        os.makedirs(self.folder, exist_ok=True)
         path = os.path.join(self.folder, f"{document['doc_id']}.json")
         with open(path, "w", encoding="utf-8") as file:
             json.dump(document, file, indent=2, sort_keys=True)
@@ -181,9 +269,10 @@ class DocNode:
 
     def forward_to_data(self, document):
         if not self.data_nodes:
-            return {"ok": False, "error": "no data nodes configured"}
+            return {"ok": False, "error": "no Data Nodes configured"}
 
-        last_error = None
+        successes = []
+        errors = []
         for host, port in self.data_nodes:
             try:
                 response = request(
@@ -192,71 +281,332 @@ class DocNode:
                     {
                         "type": "DOC_SUBMIT",
                         "from": self.node_id,
+                        "host": self.local_ip,
+                        "port": self.port,
                         "document": document,
                     },
-                    timeout=10.0,
+                    timeout=12.0,
                 )
                 if response and response.get("ok"):
-                    response["data_node"] = f"{host}:{port}"
-                    return response
-                last_error = response.get("error", "rejected") if response else "no response"
+                    item = {
+                        "endpoint": f"{host}:{port}",
+                        "block_index": response.get("block_index"),
+                        "block_hash": response.get("block_hash"),
+                    }
+                    successes.append(item)
+                    self.log(f"Data Node {host}:{port} stored doc {document['doc_id']}")
+                else:
+                    error = response.get("error", "rejected") if response else "no response"
+                    errors.append(f"{host}:{port} -> {error}")
             except Exception as exc:
-                last_error = str(exc)
-                self.log(f"Data node {host}:{port} unavailable: {exc}")
+                errors.append(f"{host}:{port} -> {exc}")
 
-        return {"ok": False, "error": last_error or "all data nodes failed"}
+        if successes:
+            first = successes[0]
+            return {
+                "ok": True,
+                "data_nodes": successes,
+                "block_index": first["block_index"],
+                "block_hash": first["block_hash"],
+            }
+        return {"ok": False, "error": "; ".join(errors) if errors else "all Data Nodes failed"}
+
+    def probe_data_nodes(self):
+        for host, port in self.data_nodes:
+            threading.Thread(target=self._probe_one_data_node, args=(host, port), daemon=True).start()
+
+    def _probe_one_data_node(self, host, port):
+        try:
+            response = request(host, port, {"type": "PING", "from": self.node_id}, timeout=3.0)
+            if response and response.get("ok"):
+                self.log(f"Connected to Data Node {host}:{port}")
+            else:
+                self.log(f"Data Node {host}:{port} did not answer correctly")
+        except Exception as exc:
+            self.log(f"Data Node {host}:{port} is not reachable yet: {exc}")
 
     def data_node_text(self):
         if not self.data_nodes:
             return "none"
         return ", ".join(f"{host}:{port}" for host, port in self.data_nodes)
 
-    def print_status(self):
-        with self.doc_lock:
-            count = self.doc_count
-        print()
-        print(f"Node       : {self.node_id}")
-        print(f"Docs saved : {count}")
-        print(f"Folder     : {self.folder}")
-        print(f"Data nodes : {self.data_node_text()}")
 
+class DocNodeApp:
+    def __init__(self, root):
+        self.root = root
+        self.root.title("FerroFy Doc Node")
+        self.root.geometry("1120x800")
+        self.root.minsize(980, 720)
+        install_dark_theme(root)
 
-def packet_source(payload, address):
-    host, port = address
-    return payload.get("user_node") or f"user:{host}:{port}"
+        self.node = None
+        self.data_entries = []
+        self.current_pending = None
+        self.field_widgets = {}
+        self.metric_labels = {}
+
+        self._build_config()
+        self._build_review()
+        self.review_frame.grid_remove()
+
+    def _build_config(self):
+        self.root.columnconfigure(0, weight=1)
+        self.root.rowconfigure(0, weight=1)
+
+        self.config_frame = ttk.Frame(self.root, style="TFrame")
+        self.config_frame.grid(row=0, column=0, sticky="nsew")
+        self.config_frame.columnconfigure(0, weight=1)
+        self.config_frame.rowconfigure(1, weight=1)
+
+        header = BlockchainHeader(
+            self.config_frame,
+            "FERROFY DOC NODE",
+            f"LOCAL IP {get_local_ip()}  /  APPROVAL GATEWAY  /  DATA NODE FANOUT",
+        )
+        header.grid(row=0, column=0, sticky="ew")
+
+        shell = ttk.Frame(self.config_frame, padding=18, style="TFrame")
+        shell.grid(row=1, column=0, sticky="nsew")
+        shell.columnconfigure(0, weight=1)
+        shell.columnconfigure(1, weight=1)
+        shell.rowconfigure(0, weight=1)
+
+        network = make_panel(shell, padding=18)
+        network.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        network.columnconfigure(1, weight=1)
+
+        ttk.Label(network, text="NETWORK BINDING", style="PanelAccent.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Separator(network).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 14))
+
+        self.listen_ip = self._entry_row(network, 2, "Doc Listen IP", "0.0.0.0")
+        self.listen_port = self._entry_row(network, 3, "Doc Port", str(DEFAULT_DOC_PORT))
+        self.user_ip = self._entry_row(network, 4, "User Node IP", "127.0.0.1")
+
+        ttk.Label(network, text="Data Node Count", style="Panel.TLabel").grid(row=5, column=0, sticky="w", pady=7)
+        count_row = ttk.Frame(network, style="Panel.TFrame")
+        count_row.grid(row=5, column=1, sticky="ew", pady=7)
+        self.data_count = ttk.Entry(count_row, width=8)
+        self.data_count.insert(0, "1")
+        self.data_count.pack(side="left")
+        ttk.Button(count_row, text="BUILD", command=self.build_data_inputs).pack(side="left", padx=8)
+
+        data_panel = make_panel(shell, padding=18, style="Panel2.TFrame")
+        data_panel.grid(row=0, column=1, sticky="nsew")
+        data_panel.columnconfigure(0, weight=1)
+        data_panel.rowconfigure(2, weight=1)
+
+        ttk.Label(data_panel, text="DATA NODE ROUTES", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Separator(data_panel).grid(row=1, column=0, sticky="ew", pady=(10, 14))
+        self.data_inputs_frame = ttk.Frame(data_panel, style="Panel2.TFrame")
+        self.data_inputs_frame.grid(row=2, column=0, sticky="nsew")
+        self.data_inputs_frame.columnconfigure(1, weight=1)
+        self.build_data_inputs()
+
+        footer = ttk.Frame(data_panel, style="Panel2.TFrame")
+        footer.grid(row=3, column=0, sticky="ew", pady=(14, 0))
+        footer.columnconfigure(0, weight=1)
+        ttk.Button(footer, text="START DOC NODE", style="Accent.TButton", command=self.start_node).grid(row=0, column=1)
+
+    def _entry_row(self, parent, row, label, value):
+        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=7, padx=(0, 10))
+        entry = ttk.Entry(parent)
+        entry.insert(0, value)
+        entry.grid(row=row, column=1, sticky="ew", pady=7)
+        return entry
+
+    def build_data_inputs(self):
+        for child in self.data_inputs_frame.winfo_children():
+            child.destroy()
+        self.data_entries = []
+
+        try:
+            count = max(0, int(self.data_count.get().strip() or "0"))
+        except ValueError:
+            count = 1
+            self.data_count.delete(0, "end")
+            self.data_count.insert(0, "1")
+
+        for index in range(count):
+            ttk.Label(self.data_inputs_frame, text=f"Data Node {index + 1}", style="Panel2.TLabel").grid(
+                row=index, column=0, sticky="w", pady=7, padx=(0, 12)
+            )
+            entry = ttk.Entry(self.data_inputs_frame)
+            entry.insert(0, f"127.0.0.1:{DEFAULT_DATA_PORT + index}")
+            entry.grid(row=index, column=1, sticky="ew", pady=7)
+            self.data_entries.append(entry)
+
+    def _build_review(self):
+        self.review_frame = ttk.Frame(self.root, style="TFrame")
+        self.review_frame.grid(row=0, column=0, sticky="nsew")
+        self.review_frame.columnconfigure(0, weight=1)
+        self.review_frame.rowconfigure(1, weight=1)
+
+        header = BlockchainHeader(
+            self.review_frame,
+            "FERROFY DOC NODE",
+            "LIVE REVIEW  /  APPROVE TO BLOCKCHAIN  /  REJECT TO USER",
+        )
+        header.grid(row=0, column=0, sticky="ew")
+
+        shell = ttk.Frame(self.review_frame, padding=18, style="TFrame")
+        shell.grid(row=1, column=0, sticky="nsew")
+        shell.columnconfigure(0, weight=3)
+        shell.columnconfigure(1, weight=2)
+        shell.rowconfigure(0, weight=1)
+
+        case_panel = make_panel(shell, padding=18, style="Panel2.TFrame")
+        case_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        case_panel.columnconfigure(1, weight=1)
+        case_panel.rowconfigure(3, weight=1)
+        case_panel.rowconfigure(4, weight=1)
+        case_panel.rowconfigure(6, weight=1)
+        case_panel.rowconfigure(7, weight=1)
+
+        top = ttk.Frame(case_panel, style="Panel2.TFrame")
+        top.grid(row=0, column=0, columnspan=2, sticky="ew")
+        top.columnconfigure(0, weight=1)
+        ttk.Label(top, text="PENDING CASE REVIEW", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
+        self.review_status = ttk.Label(top, text="WAITING", style="PanelMuted.TLabel")
+        self.review_status.grid(row=0, column=1, sticky="e")
+        ttk.Separator(case_panel).grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 12))
+
+        row = 2
+        for key, label in FORM_KEYS:
+            ttk.Label(case_panel, text=label, style="Panel2.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=5)
+            text = tk.Text(case_panel, height=2 if key in {"name", "disease", "date"} else 4, wrap="word")
+            style_text_widget(text, readonly=True)
+            text.grid(row=row, column=1, sticky="nsew", pady=5)
+            self.field_widgets[key] = text
+            row += 1
+
+        ttk.Label(case_panel, text="Doctor Note", style="Panel2.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=5)
+        self.note = tk.Text(case_panel, height=4, wrap="word")
+        style_text_widget(self.note)
+        self.note.grid(row=row, column=1, sticky="nsew", pady=5)
+
+        action_bar = ttk.Frame(case_panel, style="Panel2.TFrame")
+        action_bar.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        action_bar.columnconfigure(0, weight=1)
+        self.reject_button = ttk.Button(action_bar, text="NO / REJECT", style="Danger.TButton", command=lambda: self.decide(False), state="disabled")
+        self.reject_button.grid(row=0, column=1, padx=8)
+        self.approve_button = ttk.Button(action_bar, text="YES / APPROVE", style="Success.TButton", command=lambda: self.decide(True), state="disabled")
+        self.approve_button.grid(row=0, column=2)
+
+        side = make_panel(shell, padding=18)
+        side.grid(row=0, column=1, sticky="nsew")
+        side.columnconfigure(0, weight=1)
+        side.rowconfigure(5, weight=1)
+
+        ttk.Label(side, text="NODE STATE", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Separator(side).grid(row=1, column=0, sticky="ew", pady=(10, 14))
+
+        self._metric(side, 2, "APPROVED", "0", "approved")
+        self._metric(side, 3, "REJECTED", "0", "rejected")
+        self._metric(side, 4, "DATA ROUTES", "0", "routes")
+
+        ttk.Label(side, text="EVENT LOG", style="PanelAccent.TLabel").grid(row=5, column=0, sticky="sw", pady=(18, 8))
+        self.log_box = tk.Text(side, height=18, wrap="word")
+        style_text_widget(self.log_box, readonly=True)
+        self.log_box.configure(font=("Consolas", 9))
+        self.log_box.grid(row=6, column=0, sticky="nsew")
+        side.rowconfigure(6, weight=1)
+
+        bottom = ttk.Frame(side, style="Panel.TFrame")
+        bottom.grid(row=7, column=0, sticky="ew", pady=(12, 0))
+        bottom.columnconfigure(0, weight=1)
+        ttk.Button(bottom, text="STOP NODE", command=self.stop_node).grid(row=0, column=1)
+
+    def _metric(self, parent, row, label, value, key):
+        box = tk.Frame(parent, bg=COLORS["panel_2"], highlightthickness=1, highlightbackground=COLORS["line"])
+        box.grid(row=row, column=0, sticky="ew", pady=5)
+        box.columnconfigure(1, weight=1)
+        tk.Label(box, text=label, bg=COLORS["panel_2"], fg=COLORS["muted"], font=("Segoe UI", 9, "bold")).grid(
+            row=0, column=0, sticky="w", padx=12, pady=10
+        )
+        value_label = tk.Label(box, text=value, bg=COLORS["panel_2"], fg=COLORS["accent"], font=("Consolas", 13, "bold"))
+        value_label.grid(row=0, column=1, sticky="e", padx=12, pady=10)
+        self.metric_labels[key] = value_label
+
+    def start_node(self):
+        try:
+            port = int(self.listen_port.get().strip())
+            data_nodes = [parse_host_port(entry.get().strip(), DEFAULT_DATA_PORT) for entry in self.data_entries]
+        except Exception as exc:
+            messagebox.showerror("Invalid Setup", str(exc))
+            return
+
+        self.node = DocNode(
+            listen_host=self.listen_ip.get().strip() or "0.0.0.0",
+            port=port,
+            allowed_user_ip=self.user_ip.get().strip(),
+            data_nodes=data_nodes,
+            on_pending=lambda pending: self.root.after(0, self.show_pending, pending),
+            on_log=lambda line: self.root.after(0, self.add_log, line),
+        )
+
+        try:
+            self.node.start()
+        except Exception as exc:
+            messagebox.showerror("Start Failed", str(exc))
+            return
+
+        self.metric_labels["routes"].configure(text=str(len(data_nodes)))
+        self.config_frame.grid_remove()
+        self.review_frame.grid()
+        self.add_log("Doc GUI online.")
+
+    def stop_node(self):
+        if self.node:
+            self.node.stop()
+        self.root.destroy()
+
+    def show_pending(self, pending):
+        self.current_pending = pending
+        self.review_status.configure(text=f"REQUEST {pending.request_id}", foreground=status_color("warn"))
+        for key, _label in FORM_KEYS:
+            set_text_value(self.field_widgets[key], str(pending.payload.get(key, "")))
+        self.note.delete("1.0", "end")
+        self.approve_button.configure(state="normal")
+        self.reject_button.configure(state="normal")
+        self.add_log(f"Case loaded from {pending.address[0]}.")
+
+    def decide(self, approved):
+        if not self.current_pending or not self.node:
+            return
+        pending = self.current_pending
+        note = self.note.get("1.0", "end").strip()
+        self.approve_button.configure(state="disabled")
+        self.reject_button.configure(state="disabled")
+        self.review_status.configure(text="COMMITTING DECISION", foreground=status_color("warn"))
+
+        threading.Thread(target=self._decision_worker, args=(pending, approved, note), daemon=True).start()
+
+    def _decision_worker(self, pending, approved, note):
+        ok, message = self.node.approve_pending(pending.request_id, approved, note)
+        self.root.after(0, lambda: self.finish_decision(ok, message))
+
+    def finish_decision(self, ok, message):
+        self.current_pending = None
+        self.review_status.configure(
+            text=f"DONE: {message}".upper() if ok else f"FAILED: {message}".upper(),
+            foreground=status_color("ok" if ok else "error"),
+        )
+        for key, _label in FORM_KEYS:
+            set_text_value(self.field_widgets[key], "")
+        self.note.delete("1.0", "end")
+        if self.node:
+            self.metric_labels["approved"].configure(text=str(self.node.approved_count))
+            self.metric_labels["rejected"].configure(text=str(self.node.rejected_count))
+
+    def add_log(self, line):
+        append_log(self.log_box, line)
 
 
 def Start_Doc():
-    print()
-    print("FerroFy Doc Node")
-    print("This node receives User data, verifies it, and forwards it to Data nodes.")
-    print()
-
-    port = ask_int("Doc node port", DEFAULT_DOC_PORT)
-    default_data = f"127.0.0.1:{DEFAULT_DATA_PORT}"
-    data_raw = input(f"Data node addresses [{default_data}] > ").strip() or default_data
-    data_nodes = parse_peer_list(data_raw, DEFAULT_DATA_PORT)
-    folder = input(f"Document folder [{DEFAULT_DOC_FOLDER}] > ").strip() or DEFAULT_DOC_FOLDER
-
-    node = DocNode(port=port, data_nodes=data_nodes, folder=folder)
-    node.start()
-
-    print()
-    print("Commands: status, quit")
-    try:
-        while True:
-            command = input("doc> ").strip().lower()
-            if command in {"q", "quit", "exit"}:
-                break
-            if command in {"", "status"}:
-                node.print_status()
-            else:
-                print("Unknown command. Use: status, quit")
-    except KeyboardInterrupt:
-        print()
-    finally:
-        node.stop()
-        print("Doc node stopped.")
+    root = tk.Tk()
+    app = DocNodeApp(root)
+    root.protocol("WM_DELETE_WINDOW", app.stop_node)
+    root.mainloop()
 
 
 if __name__ == "__main__":

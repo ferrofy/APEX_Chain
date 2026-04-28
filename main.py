@@ -220,17 +220,18 @@ def Print_Architecture():
     Section("3-Node Architecture")
     print(f"  {Blue('User Node')}    {Dim('─────►')}  {Green('Validator Node')}  {Dim('─────►')}  {Magenta('Data Node')}")
     print()
-    print(f"  {Blue('Port 5000')}  Identity Handshake  (All Nodes)")
+    print(f"  {Magenta('Port 5000')}  Central Hub  (Data Node)  —  All Nodes Handshake Here")
     print(f"  {Green('Port 5001')}  User → Validator")
-    print(f"  {Magenta('Port 5002')}  Validator → Data")
     print(f"  {Cyan('Port 5003')}  Chain Peer Sync  (Data Nodes)")
+    print()
+    print(f"  {Yellow('Passwords')}  User={Blue('User')}   Validator={Green('Doc')}   Data={Magenta('Storage')}")
     print()
 
 def Print_Node_Menu():
     Section("Which Node Are You?")
-    print(f"  {Blue('[ 1 ]')}  {Blue('User Node')}       — Send Data Requests  (Port 5000 + 5001)")
-    print(f"  {Green('[ 2 ]')}  {Green('Validator Node')} — Approve / Reject    (Port 5000 + 5001 + 5002)")
-    print(f"  {Magenta('[ 3 ]')}  {Magenta('Data Node')}       — Store Blocks         (Port 5000 + 5002 + 5003)")
+    print(f"  {Magenta('[ 3 ]')}  {Magenta('Data Node')}       — Central Hub  (Start First!)  Port 5000 + 5003")
+    print(f"  {Green('[ 2 ]')}  {Green('Validator Node')} — Approve / Reject              Port 5001")
+    print(f"  {Blue('[ 1 ]')}  {Blue('User Node')}       — Send Data Requests            Port 5001")
     print(f"  {Dim('[ 0 ]')}  {Dim('Exit')}")
     print()
 
@@ -259,41 +260,46 @@ def Main():
     Nodes = Scan_Network(My_IP, Prefix)
     Print_Discovered_Nodes(Nodes)
 
-    Peer_IPs = [N["IP"] for N in Nodes]
+    By_Type = {}
+    for N in Nodes:
+        By_Type.setdefault(N["Type"], []).append(N["IP"])
 
     if Nodes:
         Section("Peer Registry")
-        By_Type = {}
-        for N in Nodes:
-            By_Type.setdefault(N["Type"], []).append(N["IP"])
         for T, IPs in By_Type.items():
             Info(T, "  ".join([Cyan(IP) for IP in IPs]))
         print()
+
+    Data_IPs = By_Type.get("DATA_NODE", [])
+    Val_IPs  = By_Type.get("VALIDATOR_NODE", [])
+
+    Data_IP = Data_IPs[0] if Data_IPs else "127.0.0.1"
+    Val_IP  = Val_IPs[0]  if Val_IPs  else "127.0.0.1"
 
     Print_Node_Menu()
     Choice = input(f"  {Bold(Yellow('Select Node Type'))} > ").strip()
 
     Scripts = {
-        "1": ("User Node",       User_Path),
-        "2": ("Validator Node",  Val_Path),
-        "3": ("Data Node",       Data_Path),
+        "1": ("User Node",      User_Path),
+        "2": ("Validator Node", Val_Path),
+        "3": ("Data Node",      Data_Path),
     }
 
     if Choice in Scripts:
         Name, Script = Scripts[Choice]
         Section(f"Launching {Name}")
-        Log("Peers",  f"Passing {len(Peer_IPs)} Known Peer(s) To Node", "cyan")
-        for IP in Peer_IPs:
-            Log("  Peer", Cyan(IP), "dim")
         Log("Launch", f"Starting {Yellow(Name)}...", "green")
         print()
         time.sleep(0.3)
 
-        Peers_Arg = json.dumps(Peer_IPs)
-        if Choice == "3":
-            Process = subprocess.Popen([Py_Exe, Script])
+        if Choice == "1":
+            Info("Validator IP", Cyan(Val_IP))
+            Process = subprocess.Popen([Py_Exe, Script, Val_IP])
+        elif Choice == "2":
+            Info("Data Node IP", Cyan(Data_IP))
+            Process = subprocess.Popen([Py_Exe, Script, Data_IP])
         else:
-            Process = subprocess.Popen([Py_Exe, Script, Peers_Arg])
+            Process = subprocess.Popen([Py_Exe, Script])
         Process.wait()
 
     elif Choice == "0":

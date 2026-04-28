@@ -13,10 +13,16 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 NODE_TYPE  = "DATA_NODE"
-DATA_PORT  = 5002
+HUB_PORT   = 5000
 SYNC_PORT  = 5003
 BANNER_W   = 62
 BLOCKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Blocks")
+
+PASS_MAP = {
+    "User":    "USER_NODE",
+    "Doc":     "VALIDATOR_NODE",
+    "Storage": "DATA_NODE",
+}
 
 def Clr(Code, Text):   return f"\033[{Code}m{Text}\033[0m"
 def Bold(T):           return Clr("1",  T)
@@ -41,7 +47,7 @@ def Print_Logo():
     for Line in LOGO:
         print(Magenta(Line))
     print(Bold(Magenta("  " + "─" * BANNER_W)))
-    print(Magenta("  Data Node  —  Block Storage Engine  (Start Me First!)"))
+    print(Magenta("  Data Node  —  Central Hub  |  Port 5000  |  Start Me First!"))
     print(Magenta("  HackIndia Spark 7  |  North Region  |  Apex"))
     print(Bold(Magenta("  " + "─" * BANNER_W)))
     print()
@@ -74,21 +80,20 @@ def Calculate_Hash(Block_Data):
     return SHA256_Str(json.dumps(Core, sort_keys=True))
 
 def Next_Block_Index():
-    Abs_Blocks = os.path.abspath(BLOCKS_DIR)
-    if not os.path.exists(Abs_Blocks):
-        os.makedirs(Abs_Blocks)
-    Files = [F for F in os.listdir(Abs_Blocks) if F.startswith("block_") and F.endswith(".json")]
+    Abs = os.path.abspath(BLOCKS_DIR)
+    if not os.path.exists(Abs):
+        os.makedirs(Abs)
+    Files = [F for F in os.listdir(Abs) if F.startswith("block_") and F.endswith(".json")]
     return len(Files)
 
 def Get_Prev_Hash(Index):
     if Index == 0:
         return ""
-    Abs_Blocks = os.path.abspath(BLOCKS_DIR)
-    Prev_Path  = os.path.join(Abs_Blocks, f"block_{Index - 1}.json")
+    Abs      = os.path.abspath(BLOCKS_DIR)
+    Prev_Path = os.path.join(Abs, f"block_{Index - 1}.json")
     try:
         with open(Prev_Path, "r") as F:
-            Prev = json.load(F)
-            return Prev.get("Hash", "")
+            return json.load(F).get("Hash", "")
     except Exception:
         return ""
 
@@ -96,58 +101,79 @@ def Write_Block(Payload):
     Index     = Next_Block_Index()
     Prev_Hash = Get_Prev_Hash(Index)
     Timestamp = int(time.time())
-
     Block_Data = {
         "Block":     Index,
         "Timestamp": Timestamp,
         "Data":      Payload,
         "Prev_Hash": Prev_Hash,
     }
-
-    if Index == 0:
-        Block_Hash = "0" * 64
-    else:
-        Block_Hash = Calculate_Hash(Block_Data)
-
+    Block_Hash       = "0" * 64 if Index == 0 else Calculate_Hash(Block_Data)
     Block_Data["Hash"] = Block_Hash
-    Abs_Blocks = os.path.abspath(BLOCKS_DIR)
-    Path       = os.path.join(Abs_Blocks, f"block_{Index}.json")
-
+    Abs  = os.path.abspath(BLOCKS_DIR)
+    Path = os.path.join(Abs, f"block_{Index}.json")
     with open(Path, "w") as F:
         json.dump(Block_Data, F, indent=4)
-
     return Index, Block_Hash, Path
 
-def Handle_Validator(Conn, Addr):
+def Recv_All(Conn):
+    Raw = b""
+    Conn.settimeout(10)
     try:
-        Raw = b""
         while True:
             Chunk = Conn.recv(4096)
             if not Chunk:
                 break
             Raw += Chunk
-        Packet = json.loads(Raw.decode("utf-8"))
+    except socket.timeout:
+        pass
+    return Raw
 
-        Decision = Packet.get("Decision", "").upper()
-        Wallet   = Packet.get("Wallet", "unknown")
-        Data     = Packet.get("Data", {})
+def Handle_Connection(Conn, Addr):
+    try:
+        Conn.settimeout(5)
+        Raw_Pass = Conn.recv(256).decode("utf-8").strip()
 
-        Section("Incoming Validator Decision")
-        Info("From Validator", str(Addr))
-        Info("Wallet",         Cyan(Wallet[:16] + "...."))
-        Info("Decision",       Green("YES") if Decision == "YES" else Red("NO"))
+        if Raw_Pass == "WHO":
+            Reply = json.dumps({"Type": NODE_TYPE}).encode("utf-8")
+            Conn.sendall(Reply)
+            return
 
-        if Decision == "YES":
-            Payload = {"Wallet": Wallet, **Data}
-            Index, Block_Hash, Path = Write_Block(Payload)
-            print()
-            Log("Block Stored", f"#{Index}  →  {Green(Path)}", "green")
-            Log("Hash",         Cyan(Block_Hash[:48] + "..."), "cyan")
-            Conn.sendall(b"STORED")
-        else:
-            print()
-            Log("Rejected", f"Validator Denied Request From {Yellow(Wallet[:16] + '....')}", "yellow")
-            Conn.sendall(b"REJECTED")
+        Node_Role = PASS_MAP.get(Raw_Pass)
+
+        if not Node_Role:
+            Log("Auth Fail", f"Wrong Password From {Addr[0]} → '{Raw_Pass}'", "red")
+            Conn.sendall(b"REJECT")
+            return
+
+        Conn.sendall(b"OK")
+        Log("Auth OK", f"{Yellow(Node_Role)}  ←  {Cyan(Addr[0])}", "cyan")
+
+        if Node_Role == "VALIDATOR_NODE":
+            Conn.settimeout(None)
+            Raw = Recv_All(Conn)
+            if not Raw:
+                return
+            Packet   = json.loads(Raw.decode("utf-8"))
+            Decision = Packet.get("Decision", "").upper()
+            Wallet   = Packet.get("Wallet", "unknown")
+            Data     = Packet.get("Data", {})
+
+            Section("Validator Decision Received")
+            Info("From",     f"{Cyan(Addr[0])}")
+            Info("Wallet",   Cyan(Wallet[:16] + "...."))
+            Info("Decision", Green("YES") if Decision == "YES" else Red("NO"))
+
+            if Decision == "YES":
+                Payload = {"Wallet": Wallet, **Data}
+                Index, Block_Hash, Path = Write_Block(Payload)
+                print()
+                Log("Block Stored", f"#{Index}  →  {Green(Path)}", "green")
+                Log("Hash",         Cyan(Block_Hash[:48] + "..."), "cyan")
+                Conn.sendall(b"STORED")
+            else:
+                print()
+                Log("Rejected", f"Block Discarded — Validator Said No", "yellow")
+                Conn.sendall(b"REJECTED")
 
     except Exception as E:
         Log("Error", str(E), "red")
@@ -165,10 +191,11 @@ def Run_Data_Node():
     Chain, Corrupt = Chain_Verify.Run_Verify_And_Repair(Verbose=True)
 
     Section("Data Node Startup")
-    Info("Data Port",    str(DATA_PORT))
-    Info("Sync Port",    str(SYNC_PORT))
-    Info("Blocks Dir",   Abs_Blocks)
+    Info("Hub Port",    str(HUB_PORT))
+    Info("Sync Port",   str(SYNC_PORT))
+    Info("Blocks Dir",  Abs_Blocks)
     Info("Chain Height", str(len(Chain)))
+    Info("Passwords",   f"User={Yellow('User')}  Validator={Green('Doc')}  Data={Magenta('Storage')}")
     print()
 
     Chain_Verify.Start_Sync_Server(Abs_Blocks)
@@ -176,14 +203,14 @@ def Run_Data_Node():
 
     Srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    Srv.bind(("0.0.0.0", DATA_PORT))
-    Srv.listen(10)
+    Srv.bind(("0.0.0.0", HUB_PORT))
+    Srv.listen(20)
 
-    Log("Ready", f"Waiting For Validator Decisions On Port {DATA_PORT}...", "magenta")
+    Log("Ready", f"Central Hub Listening On Port {HUB_PORT}  —  All Nodes Connect Here", "magenta")
 
     while True:
         Conn, Addr = Srv.accept()
-        T = threading.Thread(target=Handle_Validator, args=(Conn, Addr), daemon=True)
+        T = threading.Thread(target=Handle_Connection, args=(Conn, Addr), daemon=True)
         T.start()
 
 Run_Data_Node()

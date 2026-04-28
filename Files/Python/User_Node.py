@@ -9,6 +9,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 NODE_TYPE      = "USER_NODE"
+MY_PASS        = "User"
 VALIDATOR_IP   = "127.0.0.1"
 VALIDATOR_PORT = 5001
 BANNER_W       = 62
@@ -56,15 +57,57 @@ def Log(Tag, Msg, Color="dim"):
     Fn = Colors.get(Color, Dim)
     print(f"  {Fn(f'[{Tag}]'):<28}  {Msg}")
 
-def Check_Validator_Online():
+def Check_Validator(Val_IP):
     try:
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        S.settimeout(2)
-        S.connect((VALIDATOR_IP, VALIDATOR_PORT))
+        S.settimeout(3)
+        S.connect((Val_IP, VALIDATOR_PORT))
+        S.sendall(MY_PASS.encode("utf-8"))
+        Reply = S.recv(16).decode("utf-8").strip()
         S.close()
-        return True
+        return Reply == "OK"
     except Exception:
         return False
+
+def Wait_For_Validator(Val_IP):
+    Retries = 0
+    while True:
+        if Check_Validator(Val_IP):
+            Log("Handshake", f"{Green('OK')}  ✓  Validator At {Val_IP}:{VALIDATOR_PORT}  Password={Yellow(MY_PASS)}", "green")
+            return
+        Retries += 1
+        Log("Handshake", f"{Red('Failed')} — Retry {Retries}... (Start Validator_Node.py First)", "red")
+        time.sleep(3)
+
+def Send_To_Validator(Val_IP, Wallet, Data):
+    try:
+        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        S.settimeout(5)
+        S.connect((Val_IP, VALIDATOR_PORT))
+        S.sendall(MY_PASS.encode("utf-8"))
+        Reply = S.recv(16).decode("utf-8").strip()
+        if Reply != "OK":
+            S.close()
+            return "ERROR:AUTH_REJECTED"
+
+        Packet = json.dumps({"Wallet": Wallet, "Data": Data}).encode("utf-8")
+        S.settimeout(60)
+        S.sendall(Packet)
+        S.shutdown(socket.SHUT_WR)
+
+        Response = b""
+        while True:
+            Chunk = S.recv(4096)
+            if not Chunk:
+                break
+            Response += Chunk
+        S.close()
+        return Response.decode("utf-8")
+
+    except ConnectionRefusedError:
+        return "ERROR:NO_VALIDATOR"
+    except Exception as E:
+        return f"ERROR:{E}"
 
 def Get_Wallet():
     print()
@@ -93,45 +136,23 @@ def Get_Request_Data():
 
     return Data
 
-def Send_To_Validator(Wallet, Data):
-    Packet = json.dumps({"Wallet": Wallet, "Data": Data}).encode("utf-8")
-
-    try:
-        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        S.settimeout(30)
-        S.connect((VALIDATOR_IP, VALIDATOR_PORT))
-        S.sendall(Packet)
-        S.shutdown(socket.SHUT_WR)
-
-        Response = b""
-        while True:
-            Chunk = S.recv(4096)
-            if not Chunk:
-                break
-            Response += Chunk
-        S.close()
-        return Response.decode("utf-8")
-
-    except ConnectionRefusedError:
-        return "ERROR:NO_VALIDATOR"
-    except Exception as E:
-        return f"ERROR:{E}"
-
-def Run_User_Node():
+def Run_User_Node(Val_IP=None):
     os.system("")
     Print_Logo()
 
-    Section("Checking Validator Node Connection")
-    Retries = 0
-    while True:
-        if Check_Validator_Online():
-            Log("Validator", f"{Green('Online')}  ✓  Connected To {VALIDATOR_IP}:{VALIDATOR_PORT}", "green")
-            break
-        Retries += 1
-        Log("Validator", f"{Red('Offline')} — Retry {Retries}... (Start Validator_Node.py First)", "red")
-        time.sleep(3)
+    if not Val_IP:
+        Val_IP = VALIDATOR_IP
 
-    Section("User Node — Wallet Setup")
+    Section("User Node Startup")
+    Info("My Password",    Yellow(MY_PASS))
+    Info("Validator IP",   Val_IP)
+    Info("Validator Port", str(VALIDATOR_PORT))
+    print()
+
+    Section("Handshaking With Validator Node")
+    Wait_For_Validator(Val_IP)
+
+    Section("Wallet Setup")
     Wallet = Get_Wallet()
     Info("Wallet Address", Cyan(Wallet[:16] + "...."))
 
@@ -142,16 +163,15 @@ def Run_User_Node():
             Log("Warning", "No Data Fields Entered.  Request Cancelled.", "yellow")
         else:
             Section("Sending Request To Validator")
-            Info("Validator IP",   Cyan(VALIDATOR_IP))
-            Info("Validator Port", str(VALIDATOR_PORT))
-            Info("Wallet",         Cyan(Wallet[:16] + "...."))
-            Info("Fields",         str(len(Data)))
+            Info("Validator",  f"{Cyan(Val_IP)}:{VALIDATOR_PORT}")
+            Info("Wallet",     Cyan(Wallet[:16] + "...."))
+            Info("Fields",     str(len(Data)))
             for K, V in Data.items():
                 Info(f"  {K}", Dim(V))
 
             print()
-            Log("Sending", f"Connecting To Validator At {VALIDATOR_IP}:{VALIDATOR_PORT}...", "cyan")
-            Response = Send_To_Validator(Wallet, Data)
+            Log("Sending", f"Connecting To Validator At {Val_IP}:{VALIDATOR_PORT}...", "cyan")
+            Response = Send_To_Validator(Val_IP, Wallet, Data)
 
             print()
             if Response == "STORED":
@@ -160,6 +180,8 @@ def Run_User_Node():
                 Log("Response", f"Validator {Red('REJECTED')} → Block Not Written", "red")
             elif Response == "ERROR:NO_VALIDATOR":
                 Log("Response", f"{Red('Validator Not Online')} — Start Validator_Node.py First", "red")
+            elif Response == "ERROR:AUTH_REJECTED":
+                Log("Response", f"{Red('Auth Rejected')} — Wrong Password Sent", "red")
             else:
                 Log("Response", Dim(Response), "dim")
 
@@ -173,4 +195,5 @@ def Run_User_Node():
     print()
 
 if __name__ == "__main__":
-    Run_User_Node()
+    Val_IP = sys.argv[1] if len(sys.argv) > 1 else VALIDATOR_IP
+    Run_User_Node(Val_IP)

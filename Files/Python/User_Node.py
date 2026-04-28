@@ -1,23 +1,82 @@
-import sys
-import os
-import socket
-import json
-import time
+import sys, os, socket, json, time, threading
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-VALIDATOR_PORT = 5001
-BANNER_W       = 62
+LISTEN_PORT = 5000
+BANNER_W    = 60
 
-def Clr(Code, Text): return f"\033[{Code}m{Text}\033[0m"
-def Bold(T):  return Clr("1",  T)
-def Green(T): return Clr("92", T)
-def Yellow(T):return Clr("93", T)
-def Red(T):   return Clr("91", T)
-def Cyan(T):  return Clr("96", T)
-def Dim(T):   return Clr("2",  T)
-def Blue(T):  return Clr("94", T)
+def Clr(C, T): return f"\033[{C}m{T}\033[0m"
+def Green(T):  return Clr("92", T)
+def Yellow(T): return Clr("93", T)
+def Red(T):    return Clr("91", T)
+def Cyan(T):   return Clr("96", T)
+def Dim(T):    return Clr("2",  T)
+def Bold(T):   return Clr("1",  T)
+def Blue(T):   return Clr("94", T)
+
+def TS():
+    return Dim(time.strftime("[%H:%M:%S]"))
+
+def Log(Tag, Msg, Color=Dim):
+    print(f"  {TS()} {Color(f'[{Tag}]'):<30}  {Msg}", flush=True)
+
+def Get_My_IP():
+    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        S.connect(("8.8.8.8", 80))
+        return S.getsockname()[0]
+    except:
+        return "127.0.0.1"
+    finally:
+        S.close()
+
+def Get_Wallet():
+    print()
+    print(f"  {Cyan('Wallet Address')}  (Enter Or Press Return For Default)")
+    W = input(f"  {Dim('>')} ").strip()
+    return W if W else "a" * 64
+
+def Get_Fields():
+    print(f"\n  {Cyan('Enter Data Fields')}  {Dim('(Blank Name To Finish)')}\n")
+    Data, N = {}, 1
+    while True:
+        K = input(f"  {Cyan(f'Field {N}')} Name  > ").strip()
+        if not K:
+            break
+        V = input(f"  {Cyan(f'Field {N}')} Value > ").strip()
+        Data[K] = V
+        N += 1
+        print()
+    return Data
+
+def Send_To_Validator(Val_IP, Wallet, Data):
+    try:
+        Log("CONNECT", f"Connecting To Validator  {Cyan(Val_IP)}:{LISTEN_PORT}", Cyan)
+        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        S.settimeout(10)
+        S.connect((Val_IP, LISTEN_PORT))
+        Log("CONNECT", f"{Green('Connected')}  ✓", Green)
+
+        Pkt = json.dumps({"Wallet": Wallet, "Data": Data}).encode()
+        S.sendall(Pkt)
+        S.shutdown(socket.SHUT_WR)
+        Log("SEND",    f"Data Sent  ({len(Pkt)} bytes)", Cyan)
+
+        Log("WAIT",    "Waiting For Validator Decision...", Yellow)
+        S.settimeout(None)
+        Buf = b""
+        while True:
+            Chunk = S.recv(4096)
+            if not Chunk:
+                break
+            Buf += Chunk
+        S.close()
+        return Buf.decode()
+    except ConnectionRefusedError:
+        return "ERROR:VALIDATOR_OFFLINE"
+    except Exception as E:
+        return f"ERROR:{E}"
 
 LOGO = [
     " ██╗   ██╗███████╗███████╗██████╗ ",
@@ -28,137 +87,44 @@ LOGO = [
     "  ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝",
 ]
 
-def Print_Logo():
-    print()
-    for Line in LOGO:
-        print(Blue(Line))
-    print(Bold(Blue("  " + "─" * BANNER_W)))
-    print(Blue("  User Node  —  Data Request Sender"))
-    print(Blue("  HackIndia Spark 7  |  North Region  |  Apex"))
-    print(Bold(Blue("  " + "─" * BANNER_W)))
-    print()
+os.system("")
+print()
+for L in LOGO: print(Blue(L))
+print(Blue("  " + "─" * BANNER_W))
+print(Blue("  User Node  —  HackIndia Spark 7"))
+print(Blue("  " + "─" * BANNER_W))
+print()
 
-def Section(Title):
-    print()
-    print(Dim("  " + "─" * BANNER_W))
-    print(f"  {Bold(Yellow(Title))}")
-    print(Dim("  " + "─" * BANNER_W))
+My_IP = Get_My_IP()
+Log("MY IP",    Cyan(My_IP), Cyan)
+Log("CONNECTS", f"Validator On Port {LISTEN_PORT}", Dim)
+print()
 
-def Info(Label, Value):
-    print(f"  {Cyan(f'[{Label}]'):<36}  {Value}")
+Val_IP = input(f"  {Bold(Yellow('Enter Validator IP'))} > ").strip() or "127.0.0.1"
+Log("VALIDATOR", Cyan(Val_IP), Cyan)
 
-def Log(Tag, Msg, Color="dim"):
-    Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan, "blue": Blue}
-    print(f"  {Colors.get(Color, Dim)(f'[{Tag}]'):<28}  {Msg}")
+Wallet = Get_Wallet()
+Log("WALLET", Cyan(Wallet[:16] + "...."), Cyan)
 
-def Get_My_IP():
-    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        S.connect(("8.8.8.8", 80))
-        return S.getsockname()[0]
-    except Exception:
-        return "127.0.0.1"
-    finally:
-        S.close()
-
-def Send_To_Validator(Val_IP, Wallet, Data):
-    try:
-        Log("Connect", f"Connecting To Validator @ {Cyan(Val_IP)}:{VALIDATOR_PORT}...", "cyan")
-        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        S.settimeout(10)
-        S.connect((Val_IP, VALIDATOR_PORT))
-        Log("Connect", f"{Green('CONNECTED')}  ✓", "green")
-
-        Packet = json.dumps({"Wallet": Wallet, "Data": Data}).encode("utf-8")
-        S.sendall(Packet)
-        S.shutdown(socket.SHUT_WR)
-
-        Log("Waiting", "Waiting For Validator Decision...", "yellow")
-        S.settimeout(None)
-        Response = b""
-        while True:
-            Chunk = S.recv(4096)
-            if not Chunk:
-                break
-            Response += Chunk
-        S.close()
-        return Response.decode("utf-8")
-
-    except ConnectionRefusedError:
-        return "ERROR:NO_VALIDATOR"
-    except Exception as E:
-        return f"ERROR:{E}"
-
-def Get_Wallet():
-    print()
-    print(f"  {Cyan('Your Wallet Address')}  (Press Enter For Default  aaaa....aaaa)")
-    Wallet = input(f"  {Dim('Wallet')} > ").strip()
-    return Wallet if Wallet else "a" * 64
-
-def Get_Request_Data():
-    Section("Data Request Builder")
-    print(f"  {Dim('Enter Fields To Store. Leave Name Blank To Finish.')}")
-    print()
-    Data = {}
-    N = 1
-    while True:
-        Field = input(f"  {Cyan(f'Field {N} Name')}  (Blank To Finish) > ").strip()
-        if not Field:
-            break
-        Value = input(f"  {Cyan(f'Field {N} Value')}                    > ").strip()
-        Data[Field] = Value
-        N += 1
+while True:
+    Data = Get_Fields()
+    if not Data:
+        Log("WARN", "No Fields Entered — Cancelled.", Yellow)
+    else:
+        Log("INFO", f"{len(Data)} Field(s) Ready To Send", Cyan)
+        Resp = Send_To_Validator(Val_IP, Wallet, Data)
         print()
-    return Data
-
-def Run_User_Node():
-    os.system("")
-    Print_Logo()
-
-    My_IP = Get_My_IP()
-    Section("This Node — User Node")
-    Info("My IP", Cyan(My_IP))
-    print()
-
-    Section("Setup")
-    Val_IP = input(f"  {Bold(Yellow('Enter Validator IP'))} > ").strip()
-    if not Val_IP:
-        Val_IP = "127.0.0.1"
-    Info("Validator IP",   Cyan(Val_IP))
-    Info("Validator Port", str(VALIDATOR_PORT))
-
-    Section("Wallet Setup")
-    Wallet = Get_Wallet()
-    Info("Wallet", Cyan(Wallet[:16] + "...."))
-
-    while True:
-        Data = Get_Request_Data()
-        if not Data:
-            Log("Warning", "No Fields Entered — Request Cancelled.", "yellow")
+        if Resp == "STORED":
+            Log("RESULT", f"Block {Green('STORED')} Successfully  ✓", Green)
+        elif Resp == "REJECTED":
+            Log("RESULT", f"Validator {Red('REJECTED')} — Block Not Written", Red)
         else:
-            Section("Sending Request To Validator")
-            for K, V in Data.items():
-                Info(f"  {K}", Dim(V))
-            print()
-            Response = Send_To_Validator(Val_IP, Wallet, Data)
-            print()
-            if Response == "STORED":
-                Log("Response", f"Block {Green('STORED')} Successfully  ✓", "green")
-            elif Response == "REJECTED":
-                Log("Response", f"Validator {Red('REJECTED')} → Block Not Written", "red")
-            elif "ERROR" in Response:
-                Log("Response", Red(Response), "red")
-            else:
-                Log("Response", Dim(Response), "dim")
-
-        print()
-        Again = input(f"  {Cyan('Send Another Request?')}  ({Green('y')} / {Red('n')}) > ").strip().lower()
-        if Again != "y":
-            break
+            Log("RESULT", Red(Resp), Red)
 
     print()
-    Log("User Node", "Session Ended. Goodbye.", "cyan")
-    print()
+    if input(f"  {Cyan('Send Another?')}  (y / n) > ").strip().lower() != "y":
+        break
 
-if __name__ == "__main__":
-    Run_User_Node()
+print()
+Log("EXIT", "User Node Closed.", Dim)
+print()

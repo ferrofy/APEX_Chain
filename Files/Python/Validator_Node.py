@@ -10,19 +10,18 @@ if hasattr(sys.stdout, "reconfigure"):
 
 NODE_TYPE      = "VALIDATOR_NODE"
 MY_PASS        = "Doc"
-DATA_NODE_IP   = "127.0.0.1"
 HUB_PORT       = 5000
 VALIDATOR_PORT = 5001
 BANNER_W       = 62
 
-def Clr(Code, Text):   return f"\033[{Code}m{Text}\033[0m"
-def Bold(T):           return Clr("1",  T)
-def Green(T):          return Clr("92", T)
-def Yellow(T):         return Clr("93", T)
-def Red(T):            return Clr("91", T)
-def Cyan(T):           return Clr("96", T)
-def Dim(T):            return Clr("2",  T)
-def Magenta(T):        return Clr("95", T)
+def Clr(Code, Text): return f"\033[{Code}m{Text}\033[0m"
+def Bold(T):    return Clr("1",  T)
+def Green(T):   return Clr("92", T)
+def Yellow(T):  return Clr("93", T)
+def Red(T):     return Clr("91", T)
+def Cyan(T):    return Clr("96", T)
+def Dim(T):     return Clr("2",  T)
+def Magenta(T): return Clr("95", T)
 
 LOGO = [
     " ██╗   ██╗ █████╗ ██╗     ",
@@ -50,15 +49,23 @@ def Section(Title):
     print(Dim("  " + "─" * BANNER_W))
 
 def Info(Label, Value):
-    L = Cyan(f"[{Label}]")
-    print(f"  {L:<36}  {Value}")
+    print(f"  {Cyan(f'[{Label}]'):<36}  {Value}")
 
 def Log(Tag, Msg, Color="dim"):
     Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan, "magenta": Magenta}
-    Fn = Colors.get(Color, Dim)
-    print(f"  {Fn(f'[{Tag}]'):<28}  {Msg}")
+    print(f"  {Colors.get(Color, Dim)(f'[{Tag}]'):<28}  {Msg}")
 
-def Handshake_With_Data_Node(Data_IP):
+def Get_My_IP():
+    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        S.connect(("8.8.8.8", 80))
+        return S.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        S.close()
+
+def Handshake_With_Data(Data_IP):
     Log("Handshake ►", f"Step 1 — Connecting To Data Node @ {Cyan(Data_IP)}:{HUB_PORT}", "cyan")
     try:
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -73,28 +80,27 @@ def Handshake_With_Data_Node(Data_IP):
         S.close()
         return None
     except Exception as E:
-        Log("Handshake ►", f"Step — Exception: {Red(str(E))}", "red")
+        Log("Handshake ►", f"Exception — {Red(str(E))}", "red")
         return None
 
-def Connect_And_Wait_For_Data_Node(Data_IP):
+def Wait_For_Data(Data_IP):
     Retries = 0
     while True:
-        S = Handshake_With_Data_Node(Data_IP)
+        S = Handshake_With_Data(Data_IP)
         if S:
-            Log("Handshake", f"{Green('CONNECTED')}  ✓  Data Node Ready", "green")
+            Log("Handshake ►", f"{Green('CONNECTED')}  ✓  Data Node Is Ready", "green")
             S.close()
             return
         Retries += 1
-        Log("Handshake", f"{Red('FAILED')} — Retry {Retries}  (Is Data_Node.py Running?)", "red")
+        Log("Handshake ►", f"{Red('FAILED')} — Retry {Retries}  (Is Data_Node.py Running?)", "red")
         time.sleep(3)
 
 def Forward_To_Data(Data_IP, Packet):
-    S = Handshake_With_Data_Node(Data_IP)
+    S = Handshake_With_Data(Data_IP)
     if S is None:
         return "ERROR:NO_DATA_NODE"
     try:
-        Payload = json.dumps(Packet).encode("utf-8")
-        S.sendall(Payload)
+        S.sendall(json.dumps(Packet).encode("utf-8"))
         S.shutdown(socket.SHUT_WR)
         Response = b""
         S.settimeout(15)
@@ -108,18 +114,18 @@ def Forward_To_Data(Data_IP, Packet):
     except Exception as E:
         return f"ERROR:{E}"
 
-def Handle_User(Conn, Addr, Data_IP):
+def Handle_User(Conn, Addr, Data_IP, User_IP):
     try:
         Conn.settimeout(5)
         Pass_In = Conn.recv(64).decode("utf-8").strip()
 
         if Pass_In == "PROBE":
-            Log("Handshake ◄", f"Ping From {Cyan(Addr[0])} — Responding OK", "dim")
+            Log("Handshake ◄", f"Ping From {Cyan(Addr[0])} — OK", "dim")
             Conn.sendall(b"OK")
             return
 
         Log("Handshake ◄", f"Step 1 — Connection From {Cyan(Addr[0])}", "cyan")
-        Log("Handshake ◄", f"Step 2 — Password Received → {Yellow(Pass_In)}", "cyan")
+        Log("Handshake ◄", f"Step 2 — Password → {Yellow(Pass_In)}", "cyan")
 
         if Pass_In != "User":
             Log("Handshake ◄", f"Step 3 — {Red('REJECTED')}  Wrong Password", "red")
@@ -141,7 +147,6 @@ def Handle_User(Conn, Addr, Data_IP):
             pass
 
         if not Raw.strip():
-            Log("Handle User", "Empty Payload — Probe Connection Closed", "dim")
             return
 
         Packet = json.loads(Raw.decode("utf-8"))
@@ -185,11 +190,8 @@ def Handle_User(Conn, Addr, Data_IP):
             if Result == "STORED":
                 Log("Data Node", f"Block {Green('STORED')}  ✓", "green")
                 Conn.sendall(b"STORED")
-            elif Result == "ERROR:NO_DATA_NODE":
-                Log("Data Node", f"{Red('Not Online')}", "red")
-                Conn.sendall(b"ERROR:NO_DATA_NODE")
             else:
-                Log("Data Node", Dim(Result), "dim")
+                Log("Data Node", Red(Result), "red")
                 Conn.sendall(Result.encode("utf-8"))
         else:
             Log("Decision", f"Validator {Red('REJECTED')} → Discarded", "red")
@@ -200,22 +202,32 @@ def Handle_User(Conn, Addr, Data_IP):
     finally:
         Conn.close()
 
-def Run_Validator_Node(Data_IP=None):
+def Run_Validator_Node():
     os.system("")
     Print_Logo()
 
-    if not Data_IP:
-        Data_IP = DATA_NODE_IP
-
-    Section("Validator Node Startup")
-    Info("My Password",   Yellow(MY_PASS))
-    Info("Validator Port", str(VALIDATOR_PORT))
-    Info("Data Node IP",  Data_IP)
-    Info("Hub Port",      str(HUB_PORT))
+    My_IP = Get_My_IP()
+    Section("This Node — Validator Node")
+    Info("My IP",      Cyan(My_IP))
+    Info("Password",   Yellow(MY_PASS))
+    Info("Listen Port", str(VALIDATOR_PORT))
     print()
 
+    Section("Setup — Enter Data Node IP")
+    Data_IP = input(f"  {Bold(Yellow('Data Node IP'))} > ").strip()
+    if not Data_IP:
+        Data_IP = "127.0.0.1"
+    Info("Data Node IP", Cyan(Data_IP))
+
+    Section("Setup — Enter User Node IP")
+    print(f"  {Dim('(Informational — User connects to you. Press Enter to skip.)')}")
+    User_IP = input(f"  {Bold(Yellow('User Node IP'))} > ").strip()
+    if not User_IP:
+        User_IP = "any"
+    Info("Expected User IP", Cyan(User_IP))
+
     Section("Handshaking With Data Node")
-    Connect_And_Wait_For_Data_Node(Data_IP)
+    Wait_For_Data(Data_IP)
 
     Srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -223,13 +235,12 @@ def Run_Validator_Node(Data_IP=None):
     Srv.listen(10)
 
     print()
-    Log("Ready", f"Waiting For User Requests On Port {VALIDATOR_PORT}...", "green")
+    Log("Ready", f"Listening For User Requests On Port {VALIDATOR_PORT}...", "green")
 
     while True:
         Conn, Addr = Srv.accept()
-        T = threading.Thread(target=Handle_User, args=(Conn, Addr, Data_IP), daemon=True)
+        T = threading.Thread(target=Handle_User, args=(Conn, Addr, Data_IP, User_IP), daemon=True)
         T.start()
 
 if __name__ == "__main__":
-    Data_IP = sys.argv[1] if len(sys.argv) > 1 else DATA_NODE_IP
-    Run_Validator_Node(Data_IP)
+    Run_Validator_Node()

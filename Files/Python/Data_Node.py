@@ -58,6 +58,28 @@ def Section(Title):
     print(f"  {Bold(Yellow(Title))}")
     print(Dim("  " + "─" * BANNER_W))
 
+def Get_My_IP():
+    S = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        S.connect(("8.8.8.8", 80))
+        return S.getsockname()[0]
+    except Exception:
+        return "127.0.0.1"
+    finally:
+        S.close()
+
+def Ping_Validator(Val_IP, Val_Port=5001):
+    try:
+        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        S.settimeout(3)
+        S.connect((Val_IP, Val_Port))
+        S.sendall(b"PROBE")
+        Reply = S.recv(16).decode("utf-8").strip()
+        S.close()
+        return Reply == "OK"
+    except Exception:
+        return False
+
 def Info(Label, Value):
     L = Cyan(f"[{Label}]")
     print(f"  {L:<36}  {Value}")
@@ -187,29 +209,67 @@ def Run_Data_Node():
     os.system("")
     Print_Logo()
 
+    My_IP      = Get_My_IP()
     Abs_Blocks = os.path.abspath(BLOCKS_DIR)
     Chain_Verify.BLOCKS_DIR = Abs_Blocks
 
-    Section("Chain Integrity Check")
-    Chain, Corrupt = Chain_Verify.Run_Verify_And_Repair(Verbose=True)
-
-    Section("Data Node Startup")
+    Section("This Node — Data Node")
+    Info("My IP",       Cyan(My_IP))
     Info("Hub Port",    str(HUB_PORT))
     Info("Sync Port",   str(SYNC_PORT))
-    Info("Blocks Dir",  Abs_Blocks)
-    Info("Chain Height", str(len(Chain)))
-    Info("Passwords",   f"User={Yellow('User')}  Validator={Green('Doc')}  Data={Magenta('Storage')}")
+    Info("Passwords",   f"Validator={Green('Doc')}  Other Data={Magenta('Storage')}") 
     print()
 
+    Section("Chain Integrity Check")
+    Chain, Corrupt = Chain_Verify.Run_Verify_And_Repair(Verbose=True)
+    Info("Blocks Dir",   Abs_Blocks)
+    Info("Chain Height", str(len(Chain)))
+
+    Section("Setup — Enter Validator Node IP")
+    print(f"  {Dim('Validator will connect to you, but enter its IP to verify it is online.')}")
+    Val_IP = input(f"  {Bold(Yellow('Validator IP'))} > ").strip()
+    if not Val_IP:
+        Val_IP = "127.0.0.1"
+    Info("Validator IP", Cyan(Val_IP))
+
+    Section("Setup — Peer Data Node")
+    print(f"  {Dim('Connect to another Data Node for chain sync? (yes / no)')}")
+    Peer_Ans = input(f"  {Bold(Yellow('Connect To Peer Data Node?'))} > ").strip().lower()
+
+    if Peer_Ans == "yes":
+        Peer_IP = input(f"  {Bold(Yellow('Other Data Node IP'))} > ").strip()
+        if Peer_IP:
+            Info("Peer Data IP", Cyan(Peer_IP))
+            Log("Peer Sync", f"Syncing Chain With {Cyan(Peer_IP)}:{SYNC_PORT}...", "cyan")
+            try:
+                Chain_Verify.Sync_From_Peer(Peer_IP)
+                Log("Peer Sync", f"{Green('Done')}  ✓", "green")
+            except Exception as E:
+                Log("Peer Sync", f"{Red('Failed')} — {E}", "red")
+        else:
+            Log("Peer Sync", "No IP Entered — Skipping Peer Sync.", "yellow")
+
+    Section("Verifying Validator Is Online")
+    Retries = 0
+    while True:
+        Log("Ping ►", f"Checking Validator @ {Cyan(Val_IP)}:5001...", "cyan")
+        if Ping_Validator(Val_IP, 5001):
+            Log("Ping ►", f"{Green('REACHABLE')}  ✓  Validator Is Online", "green")
+            break
+        Retries += 1
+        Log("Ping ►", f"{Red('NOT REACHABLE')} — Retry {Retries}  (Start Validator_Node.py First)", "red")
+        time.sleep(3)
+
+    Section("Data Node Ready")
     Chain_Verify.Start_Sync_Server(Abs_Blocks)
-    Log("Sync", f"Chain Sync Server On Port {SYNC_PORT}", "cyan")
+    Log("Sync",  f"Chain Sync Server On Port {SYNC_PORT}", "cyan")
 
     Srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     Srv.bind(("0.0.0.0", HUB_PORT))
     Srv.listen(20)
 
-    Log("Ready", f"Central Hub Listening On Port {HUB_PORT}  —  All Nodes Connect Here", "magenta")
+    Log("Ready", f"Central Hub Listening On Port {HUB_PORT}  —  Waiting For Validator...", "magenta")
 
     while True:
         Conn, Addr = Srv.accept()

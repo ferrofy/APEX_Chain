@@ -6,7 +6,7 @@ import Chain_Verify
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-LISTEN_PORT = 5001
+LISTEN_PORT = 5000
 SYNC_PORT   = 5003
 BANNER_W    = 60
 BLOCKS_DIR  = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Blocks")

@@ -4,7 +4,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 USER_PORT = 5000
-DATA_PORT = 5001
+DATA_PORT = 5000
 BANNER_W  = 60
 
 def Clr(C, T): return f"\033[{C}m{T}\033[0m"
@@ -14,10 +14,7 @@ def Red(T):    return Clr("91", T)
 def Cyan(T):   return Clr("96", T)
 def Dim(T):    return Clr("2",  T)
 def Bold(T):   return Clr("1",  T)
-
-def TS():
-    return Dim(time.strftime("[%H:%M:%S]"))
-
+def TS():      return Dim(time.strftime("[%H:%M:%S]"))
 def Log(Tag, Msg, Color=Dim):
     print(f"  {TS()} {Color(f'[{Tag}]'):<30}  {Msg}", flush=True)
 
@@ -31,14 +28,32 @@ def Get_My_IP():
     finally:
         S.close()
 
-def Forward_To_Data(Data_IP, Packet):
+def Connect_Back_To_User(User_IP, Callback_Port):
     try:
-        Log("FORWARD", f"Connecting To Data Node  {Cyan(Data_IP)}:{DATA_PORT}", Cyan)
+        Log("CALLBACK", f"Connecting Back To User @ {Cyan(User_IP)}:{Callback_Port}...", Cyan)
+        S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        S.settimeout(10)
+        S.connect((User_IP, Callback_Port))
+        S.sendall(b"HELLO")
+        Reply = S.recv(16).decode().strip()
+        S.close()
+        if Reply == "ACK":
+            Log("CALLBACK", f"{Green('Two-Way Connection Confirmed')}  ✓", Green)
+            return True
+        Log("CALLBACK", f"{Red('No ACK From User')}", Red)
+        return False
+    except Exception as E:
+        Log("CALLBACK", f"{Red('Failed')} — {E}", Red)
+        return False
+
+def Forward_To_Data(Data_IP, Wallet, Data):
+    try:
+        Log("DATA", f"Connecting To Data Node @ {Cyan(Data_IP)}:{DATA_PORT}...", Cyan)
         S = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         S.settimeout(10)
         S.connect((Data_IP, DATA_PORT))
-        Log("FORWARD", f"{Green('Connected')}  ✓  Sending Block...", Green)
-        Pkt = json.dumps(Packet).encode()
+        Log("DATA", f"{Green('Connected')}  ✓  Sending Block...", Green)
+        Pkt = json.dumps({"Wallet": Wallet, "Data": Data}).encode()
         S.sendall(Pkt)
         S.shutdown(socket.SHUT_WR)
         S.settimeout(15)
@@ -57,7 +72,7 @@ def Forward_To_Data(Data_IP, Packet):
 
 def Handle_User(Conn, Addr, Data_IP):
     try:
-        Log("USER IN", f"Connection From {Cyan(Addr[0])}", Cyan)
+        Log("USER IN", f"User Connected From {Cyan(Addr[0])}", Cyan)
         Conn.settimeout(None)
         Buf = b""
         while True:
@@ -70,20 +85,35 @@ def Handle_User(Conn, Addr, Data_IP):
             Log("USER IN", "Empty Packet — Ignored", Dim)
             return
 
-        Log("RECV", f"{len(Buf)} Bytes Received", Cyan)
-        Pkt    = json.loads(Buf.decode())
-        Wallet = Pkt.get("Wallet", "unknown")
-        Data   = Pkt.get("Data", {})
+        Log("RECV",   f"{len(Buf)} Bytes Received", Cyan)
+        Pkt           = json.loads(Buf.decode())
+        Wallet        = Pkt.get("Wallet", "unknown")
+        Data          = Pkt.get("Data", {})
+        User_IP       = Pkt.get("User_IP", Addr[0])
+        Callback_Port = Pkt.get("Callback_Port", 5002)
 
         print()
         print(f"  {'─' * BANNER_W}")
         print(f"  {Bold(Yellow('NEW REQUEST FROM USER'))}")
         print(f"  {'─' * BANNER_W}")
+        Log("FROM",   Cyan(Addr[0]), Cyan)
         Log("WALLET", Cyan(Wallet[:16] + "...."), Cyan)
         for K, V in Data.items():
             Log(f"  {K}", Dim(str(V)), Dim)
         print()
-        print(f"  {Bold(Green('[ Y ]'))}  Approve — Write Block")
+
+        Log("STEP 1", "Connecting Back To User To Confirm Connection...", Yellow)
+        Callback_OK = Connect_Back_To_User(User_IP, Callback_Port)
+
+        if not Callback_OK:
+            Log("STEP 1", f"{Red('Callback Failed')} — Cannot Verify User Connection", Red)
+            Conn.sendall(b"ERROR:CALLBACK_FAILED")
+            return
+
+        Log("STEP 1", f"{Green('Connection Verified Both Ways')}  ✓", Green)
+        print()
+
+        print(f"  {Bold(Green('[ Y ]'))}  Approve — Write Block To Data Node")
         print(f"  {Bold(Red('[ N ]'))}  Reject  — Discard")
         print()
 
@@ -100,15 +130,17 @@ def Handle_User(Conn, Addr, Data_IP):
                 print(f"  {Red('Type Y or N')}")
 
         print()
-        Log("DECISION", Green("APPROVED") if Decision == "YES" else Red("REJECTED"), Green if Decision == "YES" else Red)
+        Log("DECISION", Green("APPROVED") if Decision == "YES" else Red("REJECTED"),
+            Green if Decision == "YES" else Red)
 
         if Decision == "YES":
-            Result = Forward_To_Data(Data_IP, {"Wallet": Wallet, "Data": Data})
+            Log("STEP 2", f"Connecting To Data Node @ {Cyan(Data_IP)}...", Yellow)
+            Result = Forward_To_Data(Data_IP, Wallet, Data)
             if Result == "STORED":
-                Log("DATA NODE", f"Block {Green('STORED')}  ✓", Green)
+                Log("STEP 2", f"Block {Green('STORED')}  ✓", Green)
                 Conn.sendall(b"STORED")
             else:
-                Log("DATA NODE", Red(Result), Red)
+                Log("STEP 2", Red(Result), Red)
                 Conn.sendall(Result.encode())
         else:
             Conn.sendall(b"REJECTED")
@@ -138,8 +170,8 @@ print()
 
 My_IP = Get_My_IP()
 Log("MY IP",    Cyan(My_IP), Cyan)
-Log("LISTENS",  f"Users On Port  {USER_PORT}", Dim)
-Log("FORWARDS", f"To Data On Port {DATA_PORT}", Dim)
+Log("LISTENS",  f"Users On Port {USER_PORT}", Dim)
+Log("FORWARDS", f"Data On Port  {DATA_PORT} (Data Node Machine)", Dim)
 print()
 
 Data_IP = input(f"  {Bold(Yellow('Enter Data Node IP'))} > ").strip() or "127.0.0.1"

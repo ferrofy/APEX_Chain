@@ -12,19 +12,11 @@ import Chain_Verify
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-NODE_TYPE    = "DATA_NODE"
-IDENTITY_PORT = 5000
-DATA_PORT     = 5002
-SYNC_PORT     = 5003
-BANNER_W      = 62
-BLOCKS_DIR    = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Blocks")
-
-Peer_Registry = {
-    "USER_NODE":      [],
-    "VALIDATOR_NODE": [],
-    "DATA_NODE":      [],
-}
-Registry_Lock = threading.Lock()
+NODE_TYPE  = "DATA_NODE"
+DATA_PORT  = 5002
+SYNC_PORT  = 5003
+BANNER_W   = 62
+BLOCKS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "Blocks")
 
 def Clr(Code, Text):   return f"\033[{Code}m{Text}\033[0m"
 def Bold(T):           return Clr("1",  T)
@@ -49,7 +41,7 @@ def Print_Logo():
     for Line in LOGO:
         print(Magenta(Line))
     print(Bold(Magenta("  " + "─" * BANNER_W)))
-    print(Magenta("  Data Node  —  Block Storage Engine"))
+    print(Magenta("  Data Node  —  Block Storage Engine  (Start Me First!)"))
     print(Magenta("  HackIndia Spark 7  |  North Region  |  Apex"))
     print(Bold(Magenta("  " + "─" * BANNER_W)))
     print()
@@ -68,12 +60,6 @@ def Log(Tag, Msg, Color="dim"):
     Colors = {"green": Green, "red": Red, "yellow": Yellow, "dim": Dim, "cyan": Cyan, "magenta": Magenta}
     Fn = Colors.get(Color, Dim)
     print(f"  {Fn(f'[{Tag}]'):<28}  {Msg}")
-
-def Register_Peer(Type, IP):
-    with Registry_Lock:
-        if IP not in Peer_Registry.get(Type, []):
-            Peer_Registry.setdefault(Type, []).append(IP)
-            Log("Peer Saved", f"{Yellow(Type)}  ←  {Cyan(IP)}", "cyan")
 
 def SHA256_Str(Text):
     return hashlib.sha256(Text.encode("utf-8")).hexdigest()
@@ -132,56 +118,8 @@ def Write_Block(Payload):
 
     return Index, Block_Hash, Path
 
-def Handle_Identity(Conn, Addr):
-    try:
-        Conn.settimeout(2)
-        Raw = Conn.recv(256)
-        if Raw == b"WHO":
-            Reply = json.dumps({
-                "Type":  NODE_TYPE,
-                "Ports": {"identity": IDENTITY_PORT, "data": DATA_PORT, "sync": SYNC_PORT},
-            }).encode("utf-8")
-            Conn.sendall(Reply)
-            Peer_Type = None
-        else:
-            try:
-                Pkt       = json.loads(Raw.decode("utf-8"))
-                Peer_Type = Pkt.get("Type", "")
-                Peer_IP   = Addr[0]
-                if Peer_Type:
-                    Register_Peer(Peer_Type, Peer_IP)
-                Reply = json.dumps({"Type": NODE_TYPE}).encode("utf-8")
-                Conn.sendall(Reply)
-            except Exception:
-                pass
-    except Exception:
-        pass
-    finally:
-        Conn.close()
-
-def Start_Identity_Server():
-    Srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    Srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    Srv.bind(("0.0.0.0", IDENTITY_PORT))
-    Srv.listen(20)
-
-    def Loop():
-        while True:
-            try:
-                Conn, Addr = Srv.accept()
-                T = threading.Thread(target=Handle_Identity, args=(Conn, Addr), daemon=True)
-                T.start()
-            except Exception:
-                break
-
-    T = threading.Thread(target=Loop, daemon=True)
-    T.start()
-    return Srv
-
 def Handle_Validator(Conn, Addr):
     try:
-        Register_Peer("VALIDATOR_NODE", Addr[0])
-
         Raw = b""
         while True:
             Chunk = Conn.recv(4096)
@@ -227,18 +165,14 @@ def Run_Data_Node():
     Chain, Corrupt = Chain_Verify.Run_Verify_And_Repair(Verbose=True)
 
     Section("Data Node Startup")
-    Info("Identity Port", str(IDENTITY_PORT))
-    Info("Data Port",     str(DATA_PORT))
-    Info("Sync Port",     str(SYNC_PORT))
-    Info("Blocks Dir",    Abs_Blocks)
-    Info("Chain Height",  str(len(Chain)))
+    Info("Data Port",    str(DATA_PORT))
+    Info("Sync Port",    str(SYNC_PORT))
+    Info("Blocks Dir",   Abs_Blocks)
+    Info("Chain Height", str(len(Chain)))
     print()
 
-    Start_Identity_Server()
-    Log("Identity", f"Handshake Server On Port {IDENTITY_PORT}", "cyan")
-
     Chain_Verify.Start_Sync_Server(Abs_Blocks)
-    Log("Sync",     f"Chain Sync Server On Port {SYNC_PORT}", "cyan")
+    Log("Sync", f"Chain Sync Server On Port {SYNC_PORT}", "cyan")
 
     Srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     Srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)

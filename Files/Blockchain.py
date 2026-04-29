@@ -1,0 +1,212 @@
+import hashlib
+import json
+import os
+
+from Protocol import now_utc
+
+SCHEMA = "ferrofy.localwifi.block.v1"
+ZERO_HASH = "0" * 64
+GENESIS_TIMESTAMP = "2026-04-28T00:00:00Z"
+GENESIS_CREATOR = "ferrofy:local-wifi-genesis"
+
+
+def canonical_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def sha256_text(value):
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def calculate_hash(block):
+    block_material = {key: value for key, value in block.items() if key != "hash"}
+    return sha256_text(canonical_json(block_material))
+
+
+def create_block(index, previous_hash, data, creator, timestamp=None):
+    block = {
+        "schema": SCHEMA,
+        "index": int(index),
+        "timestamp": timestamp or now_utc(),
+        "previous_hash": previous_hash,
+        "creator": creator,
+        "data": data,
+    }
+    block["hash"] = calculate_hash(block)
+    return block
+
+
+def create_genesis_block():
+    return create_block(
+        0,
+        ZERO_HASH,
+        {
+            "kind": "genesis",
+            "message": "FerroFy local WiFi blockchain started",
+        },
+        GENESIS_CREATOR,
+        GENESIS_TIMESTAMP,
+    )
+
+
+def create_next_block(previous_block, data, creator, timestamp=None):
+    return create_block(
+        int(previous_block["index"]) + 1,
+        previous_block["hash"],
+        data,
+        creator,
+        timestamp,
+    )
+
+
+def validate_block(block, previous_block=None):
+    if not isinstance(block, dict):
+        return False, "block must be an object"
+
+    required = {"schema", "index", "timestamp", "previous_hash", "creator", "data", "hash"}
+    missing = sorted(required.difference(block))
+    if missing:
+        return False, "missing fields: " + ", ".join(missing)
+
+    if block["schema"] != SCHEMA:
+        return False, f"unsupported schema: {block['schema']}"
+
+    try:
+        index = int(block["index"])
+    except Exception:
+        return False, "index must be an integer"
+
+    if index < 0:
+        return False, "index cannot be negative"
+
+    expected_hash = calculate_hash(block)
+    if block["hash"] != expected_hash:
+        return False, "hash does not match block contents"
+
+    if previous_block is None:
+        if index != 0:
+            return False, "first block must be genesis index 0"
+        if block["previous_hash"] != ZERO_HASH:
+            return False, "genesis previous_hash must be zero hash"
+        return True, "valid genesis"
+
+    if index != int(previous_block["index"]) + 1:
+        return False, "index is not sequential"
+    if block["previous_hash"] != previous_block["hash"]:
+        return False, "previous_hash does not match previous block"
+
+    return True, "valid"
+
+
+def validate_chain(chain):
+    if not chain:
+        return False, "chain is empty"
+
+    previous = None
+    for block in chain:
+        ok, reason = validate_block(block, previous)
+        if not ok:
+            index = block.get("index", "?") if isinstance(block, dict) else "?"
+            return False, f"block {index}: {reason}"
+        previous = block
+
+    return True, "valid"
+
+
+def first_invalid_block(chain):
+    previous = None
+    for block in chain:
+        ok, reason = validate_block(block, previous)
+        if not ok:
+            return block.get("index", "?") if isinstance(block, dict) else "?", reason
+        previous = block
+    return None, "valid"
+
+
+def block_file_name(index):
+    return f"block_{int(index):06d}.json"
+
+
+def load_chain(folder):
+    if not os.path.isdir(folder):
+        return []
+
+    blocks = []
+    for file_name in os.listdir(folder):
+        if not file_name.endswith(".json"):
+            continue
+        path = os.path.join(folder, file_name)
+        try:
+            with open(path, "r", encoding="utf-8") as file:
+                blocks.append(json.load(file))
+        except Exception:
+            continue
+
+    blocks.sort(key=lambda block: int(block.get("index", -1)))
+    return blocks
+
+
+def save_block(folder, block):
+    os.makedirs(folder, exist_ok=True)
+    path = os.path.join(folder, block_file_name(block["index"]))
+    with open(path, "w", encoding="utf-8") as file:
+        json.dump(block, file, indent=2, sort_keys=True)
+        file.write("\n")
+    return path
+
+
+def save_chain(folder, chain):
+    os.makedirs(folder, exist_ok=True)
+
+    expected_files = {block_file_name(block["index"]) for block in chain}
+    for file_name in os.listdir(folder):
+        if file_name.endswith(".json") and file_name not in expected_files:
+            os.remove(os.path.join(folder, file_name))
+
+    for block in chain:
+        save_block(folder, block)
+
+
+def chain_signature(chain):
+    return tuple(block.get("hash", "") for block in chain)
+
+
+def chain_summary(chain):
+    ok, reason = validate_chain(chain)
+    return {
+        "valid": ok,
+        "reason": reason,
+        "length": len(chain),
+        "tip_hash": chain[-1]["hash"] if chain else ZERO_HASH,
+    }
+
+
+def select_consensus_chain(candidates):
+    valid = []
+    for source, chain in candidates:
+        ok, _reason = validate_chain(chain)
+        if ok:
+            valid.append((source, chain))
+
+    if not valid:
+        return None, "no valid chains found"
+
+    grouped = {}
+    for source, chain in valid:
+        signature = chain_signature(chain)
+        grouped.setdefault(signature, {"sources": [], "chain": chain})
+        grouped[signature]["sources"].append(source)
+
+    best = max(
+        grouped.values(),
+        key=lambda item: (
+            len(item["sources"]),
+            len(item["chain"]),
+            item["chain"][-1]["hash"],
+        ),
+    )
+    total = len(valid)
+    votes = len(best["sources"])
+    mode = "majority" if votes > total / 2 else "best available"
+    sources = ", ".join(best["sources"])
+    return [dict(block) for block in best["chain"]], f"{mode} {votes}/{total} from {sources}"

@@ -4,6 +4,9 @@ import threading
 import time
 
 from Blockchain import (
+    append_record_to_block,
+    block_is_open,
+    build_medical_record,
     chain_signature,
     chain_summary,
     create_genesis_block,
@@ -29,7 +32,7 @@ from Protocol import (
 )
 
 PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, ".."))
 
 DEFAULT_DOC_PORT = DOC_NODE_PORT
 DEFAULT_DATA_PORT = DATA_NODE_PORT
@@ -205,47 +208,50 @@ class DataNode:
 
     def handle_doc_submit(self, packet, address):
         if not self.doc_allowed(address[0], packet.get("host", "")):
-            self.log(f"Rejected Doc Node {address[0]} because it is not configured")
-            return {"ok": False, "error": "Doc Node IP is not allowed on this Data Node"}
+            self.log(f"Rejected Doc Node {address[0]} Because It Is Not Configured")
+            return {"ok": False, "error": "Doc Node IP Is Not Allowed On This Data Node"}
 
         document = packet.get("document")
         if not isinstance(document, dict):
-            return {"ok": False, "error": "document must be an object"}
+            return {"ok": False, "error": "Document Must Be An Object"}
 
         doc_id = document.get("doc_id")
         if not doc_id:
-            return {"ok": False, "error": "document missing doc_id"}
+            return {"ok": False, "error": "Document Missing doc_id"}
 
         ok, reason = self.ensure_valid_chain()
         if not ok:
-            return {"ok": False, "error": f"local chain is not repairable yet: {reason}"}
+            return {"ok": False, "error": f"Local Chain Is Not Repairable Yet: {reason}"}
 
         existing = self.find_document_block(doc_id)
         if existing:
-            self.log(f"Doc {doc_id} already exists at block {existing['index']}")
+            self.log(f"Doc {doc_id} Already Exists At Block {existing['Block_No']}")
             return {
                 "ok": True,
                 "type": "DATA_ACK",
                 "node_id": self.node_id,
-                "block_index": existing["index"],
-                "block_hash": existing["hash"],
+                "block_index": existing["Block_No"],
+                "block_hash": existing["Hash"],
                 "duplicate": True,
             }
 
-        data = {
-            "kind": "approved_doc_record",
-            "doc_id": doc_id,
-            "document": document,
-        }
         creator = packet.get("from", f"doc:{address[0]}")
-        timestamp = document.get("approved_at") or now_utc()
+        record = build_medical_record(document)
 
         with self.chain_lock:
-            block = create_next_block(self.chain[-1], data, creator, timestamp)
-            self.chain.append(block)
-            save_block(self.folder, block)
+            last_block = self.chain[-1]
+            if block_is_open(last_block):
+                block = append_record_to_block(last_block, record)
+                self.chain[-1] = block
+                save_block(self.folder, block)
+                action = f"Appended Record To Block {block['Block_No']}"
+            else:
+                block = create_next_block(last_block, [record], creator)
+                self.chain.append(block)
+                save_block(self.folder, block)
+                action = f"Mined New Block {block['Block_No']}"
 
-        self.log(f"Added block {block['index']} for doc {doc_id}")
+        self.log(f"{action} For Doc {doc_id}")
         self.broadcast_block(block)
         self.repair_from_peers("new block verification")
 
@@ -253,8 +259,8 @@ class DataNode:
             "ok": True,
             "type": "DATA_ACK",
             "node_id": self.node_id,
-            "block_index": block["index"],
-            "block_hash": block["hash"],
+            "block_index": block["Block_No"],
+            "block_hash": block["Hash"],
         }
 
     def handle_block_proposal(self, packet, address):
@@ -264,13 +270,13 @@ class DataNode:
 
         block = packet.get("block")
         if not isinstance(block, dict):
-            return {"ok": False, "accepted": False, "error": "block must be an object"}
+            return {"ok": False, "accepted": False, "error": "Block Must Be An Object"}
 
         ok, reason = self.ensure_valid_chain()
         if not ok:
-            return {"ok": False, "accepted": False, "error": f"local chain invalid: {reason}"}
+            return {"ok": False, "accepted": False, "error": f"Local Chain Invalid: {reason}"}
 
-        block_index = int(block.get("index", -1))
+        block_index = int(block.get("Block_No", -1))
         accepted = False
         reason = "not checked"
         needs_consensus = False
@@ -279,12 +285,12 @@ class DataNode:
             local_len = len(self.chain)
 
             if block_index < local_len:
-                if self.chain[block_index].get("hash") == block.get("hash"):
+                if self.chain[block_index].get("Hash") == block.get("Hash"):
                     accepted = True
-                    reason = "already have same block"
+                    reason = f"Already Have Same Block {block_index}"
                 else:
                     needs_consensus = True
-                    reason = f"conflict at block {block_index}"
+                    reason = f"Conflict At Block {block_index}"
             elif block_index == local_len:
                 previous = self.chain[-1] if self.chain else None
                 valid, validate_reason = validate_block(block, previous)
@@ -292,17 +298,17 @@ class DataNode:
                     self.chain.append(block)
                     save_block(self.folder, block)
                     accepted = True
-                    reason = f"accepted block {block_index}"
-                    self.log(f"Accepted block {block_index} from {peer_host}:{peer_port}")
+                    reason = f"Accepted Block {block_index}"
+                    self.log(f"Accepted Block {block_index} From {peer_host}:{peer_port}")
                 else:
                     needs_consensus = True
                     reason = validate_reason
             else:
                 needs_consensus = True
-                reason = f"missing block(s) before {block_index}"
+                reason = f"Missing Block(s) Before {block_index}"
 
         if needs_consensus:
-            self.log(f"Block proposal mismatch: {reason}. Asking Data peers for majority.")
+            self.log(f"Block Proposal Mismatch: {reason}. Asking Data Peers For Majority.")
             self.repair_from_peers("block proposal mismatch")
 
         return {
@@ -311,6 +317,7 @@ class DataNode:
             "reason": reason,
             "summary": self.current_summary(),
         }
+
 
     def doc_allowed(self, remote_ip, packet_host):
         if not self.doc_nodes:
@@ -334,9 +341,9 @@ class DataNode:
     def find_document_block(self, doc_id):
         with self.chain_lock:
             for block in self.chain:
-                data = block.get("data", {})
-                if data.get("doc_id") == doc_id:
-                    return dict(block)
+                for record in block.get("Records", []):
+                    if record.get("Doc_Id") == doc_id:
+                        return dict(block)
         return None
 
     def add_peer(self, host, port):
@@ -505,14 +512,15 @@ class DataNode:
         with self.chain_lock:
             visible = list(self.chain)
         if not visible:
-            print("No blocks.")
+            print("No Blocks.")
             return
         for block in visible:
-            data = block.get("data", {})
-            doc = data.get("document", {})
-            fields = doc.get("fields", {})
-            label = fields.get("name") or data.get("doc_id") or data.get("kind", "unknown")
-            print(f"#{block['index']:03d} {block['hash'][:18]}... {label}")
+            records = block.get("Records", [])
+            record_count = len(records)
+            first_record = records[0] if records else {}
+            label = first_record.get("Kind", "unknown")
+            open_status = "Open" if block_is_open(block) else "Sealed"
+            print(f"Block_{block['Block_No']}  {block['Hash'][:20]}...  Records: {record_count}  [{open_status}]  {label}")
 
 
 def Start_Data():

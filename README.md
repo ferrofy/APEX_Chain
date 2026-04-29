@@ -10,9 +10,9 @@ User Node  ->  Doc Node  ->  Data Node Blockchain Network
 
 | Node | UI | Job |
 | --- | --- | --- |
-| User Node | `Files/Python/User_Node.pyw` GUI | Enters data and sends it to one Doc Node |
-| Doc Node | `Files/Python/Doc_Node.pyw` GUI | Reviews User data and clicks Yes / No |
-| Data Node | `main.py` option 3, or `Files/Python/Data_Node.py` | Stores approved records as hash-linked blocks and syncs with other Data Nodes |
+| User Node | `main.py` option 1, or `Files/User_Node.py` | Enters data and sends it to one Doc Node |
+| Doc Node | `main.py` option 2, or `Files/Doc_Node.py` | Reviews User data and clicks Yes / No |
+| Data Node | `main.py` option 3, or `Files/Data_Node.py` | Stores approved records as hash-linked blocks and syncs with other Data Nodes |
 
 The old two-node TX/RX design was removed so the project now follows only this
 three-node architecture.
@@ -84,7 +84,7 @@ Block folder [Blocks] >
 Run:
 
 ```bash
-pythonw Files/Python/Doc_Node.pyw
+python Files/Doc_Node.py
 ```
 
 You can also run `python main.py` and choose `2`.
@@ -106,7 +106,7 @@ When User data arrives, the Doc GUI shows the fields and waits for:
 Run:
 
 ```bash
-pythonw Files/Python/User_Node.pyw
+python Files/User_Node.py
 ```
 
 or run `python main.py` and choose `1`.

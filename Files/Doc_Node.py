@@ -1,21 +1,23 @@
 import json
 import os
+import random
 import socket
 import threading
 import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
-from Blockchain import canonical_json, sha256_text
+from Blockchain import canonical_json, sha256_text, sha512_text, token_cost_for_fields
 from Gui_Theme import (
     BlockchainHeader,
     COLORS,
     append_log,
     install_dark_theme,
     make_panel,
+    make_scrolled_frame,
+    make_scrolled_text,
     set_text_value,
     status_color,
-    style_text_widget,
 )
 from Protocol import (
     DATA_NODE_PORT,
@@ -29,8 +31,9 @@ from Protocol import (
     send_packet,
 )
 
+
 PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, ".."))
 
 DEFAULT_DOC_PORT = DOC_NODE_PORT
 DEFAULT_DATA_PORT = DATA_NODE_PORT
@@ -68,7 +71,7 @@ class DocNode:
         on_pending=None,
         on_log=None,
     ):
-        self.listen_host = listen_host or "0.0.0.0"
+        self.listen_host = listen_host or DEFAULT_LISTEN_HOST
         self.port = int(port)
         self.allowed_user_ip = (allowed_user_ip or "").strip()
         self.data_nodes = list(data_nodes)
@@ -124,7 +127,6 @@ class DocNode:
                 continue
             except OSError:
                 break
-
             threading.Thread(target=self.handle_client, args=(client, address), daemon=True).start()
 
     def handle_client(self, client, address):
@@ -142,7 +144,6 @@ class DocNode:
                 response = self.handle_user_data(packet, address)
             else:
                 response = {"ok": False, "error": f"unknown packet type: {packet_type}"}
-
             send_packet(client, response)
         except Exception as exc:
             try:
@@ -157,7 +158,7 @@ class DocNode:
 
     def handle_user_data(self, packet, address):
         if not self.user_allowed(address[0]):
-            self.log(f"Rejected User Node {address[0]} because it is not the configured IP")
+            self.log(f"Rejected User Node {address[0]} because it is not configured")
             return {"ok": False, "error": "this Doc Node is configured for another User Node"}
 
         payload = packet.get("payload")
@@ -191,7 +192,6 @@ class DocNode:
         with self.pending_lock:
             if self.active_pending is pending:
                 self.active_pending = None
-
         return pending.response or {"ok": False, "error": "request closed without decision"}
 
     def user_allowed(self, ip):
@@ -224,6 +224,7 @@ class DocNode:
 
         if data_result["ok"]:
             self.approved_count += 1
+            first_node = data_result.get("data_nodes", [{}])[0] if data_result.get("data_nodes") else {}
             pending.response = {
                 "ok": True,
                 "type": "DOC_APPROVED",
@@ -233,6 +234,9 @@ class DocNode:
                 "block_index": data_result.get("block_index"),
                 "block_hash": data_result.get("block_hash"),
                 "data_nodes": data_result.get("data_nodes", []),
+                "wallet_address": first_node.get("wallet_address", ""),
+                "token_cost": first_node.get("token_cost"),
+                "wallet_balance": first_node.get("wallet_balance"),
                 "message": "Doc Node approved and Data Node stored the record",
             }
             self.log(f"Approved request {pending.request_id} as doc {document['doc_id']}")
@@ -251,7 +255,9 @@ class DocNode:
 
     def build_document_record(self, payload, address, doctor_note):
         approved_at = now_utc()
-        content_hash = sha256_text(canonical_json({key: payload.get(key, "") for key, _label in FORM_KEYS}))
+        approved_unix = int(time.time())
+        fields = {key: payload.get(key, "") for key, _label in FORM_KEYS}
+        content_hash = sha256_text(canonical_json(fields))
         doc_seed = canonical_json(
             {
                 "content_hash": content_hash,
@@ -260,18 +266,34 @@ class DocNode:
                 "user": payload.get("user_node", ""),
             }
         )
+        doc_id = sha256_text(doc_seed)[:24]
+        signature_material = canonical_json(
+            {
+                "doc_id": doc_id,
+                "content_hash": content_hash,
+                "doctor_note": doctor_note,
+                "doc_node": self.node_id,
+                "approved_unix": approved_unix,
+            }
+        )
 
         return {
-            "doc_id": sha256_text(doc_seed)[:24],
+            "doc_id": doc_id,
             "status": "approved_by_doc_node",
             "doc_node": self.node_id,
+            "doc_node_ip": self.local_ip,
             "source_user_ip": address[0],
             "source_user_node": payload.get("user_node", f"user:{address[0]}"),
             "received_sent_at": payload.get("sent_at", ""),
             "approved_at": approved_at,
+            "approved_unix": approved_unix,
             "doctor_note": doctor_note,
+            "doc_signature": sha512_text(signature_material),
             "content_hash": content_hash,
-            "fields": {key: payload.get(key, "") for key, _label in FORM_KEYS},
+            "wallet_name": payload.get("wallet_name", ""),
+            "wallet_address": payload.get("wallet_address", ""),
+            "token_cost": int(payload.get("token_cost", token_cost_for_fields(fields))),
+            "fields": fields,
         }
 
     def save_document(self, document):
@@ -287,7 +309,11 @@ class DocNode:
 
         successes = []
         errors = []
-        for host, port in self.data_nodes:
+        data_nodes = list(self.data_nodes)
+        random.shuffle(data_nodes)
+        self.log(f"Random Data Node order: {self.data_node_text(data_nodes)}")
+
+        for host, port in data_nodes:
             try:
                 response = request(
                     host,
@@ -306,12 +332,15 @@ class DocNode:
                         "endpoint": f"{host}:{port}",
                         "block_index": response.get("block_index"),
                         "block_hash": response.get("block_hash"),
+                        "wallet_address": response.get("wallet_address"),
+                        "token_cost": response.get("token_cost"),
+                        "wallet_balance": response.get("wallet_balance"),
                     }
                     successes.append(item)
                     self.log(f"Data Node {host}:{port} stored doc {document['doc_id']}")
-                else:
-                    error = response.get("error", "rejected") if response else "no response"
-                    errors.append(f"{host}:{port} -> {error}")
+                    break
+                error = response.get("error", "rejected") if response else "no response"
+                errors.append(f"{host}:{port} -> {error}")
             except Exception as exc:
                 errors.append(f"{host}:{port} -> {exc}")
 
@@ -339,10 +368,11 @@ class DocNode:
         except Exception as exc:
             self.log(f"Data Node {host}:{port} is not reachable yet: {exc}")
 
-    def data_node_text(self):
-        if not self.data_nodes:
+    def data_node_text(self, data_nodes=None):
+        data_nodes = self.data_nodes if data_nodes is None else data_nodes
+        if not data_nodes:
             return "none"
-        return ", ".join(f"{host}:{port}" for host, port in self.data_nodes)
+        return ", ".join(f"{host}:{port}" for host, port in data_nodes)
 
 
 class DocNodeApp:
@@ -350,7 +380,7 @@ class DocNodeApp:
         self.root = root
         self.root.title("FerroFy Doc Node")
         self.root.geometry("1120x800")
-        self.root.minsize(980, 720)
+        self.root.minsize(820, 600)
         install_dark_theme(root)
 
         self.node = None
@@ -403,13 +433,14 @@ class DocNodeApp:
         self.data_count.insert(0, "1")
         self.data_count.pack(side="left")
         ttk.Button(count_row, text="BUILD", command=self.build_data_inputs).pack(side="left", padx=8)
+        ttk.Label(network, text=f"(Each On Port {DEFAULT_DATA_PORT})", style="PanelMuted.TLabel").grid(row=6, column=1, sticky="w", pady=2)
 
         data_panel = make_panel(shell, padding=18, style="Panel2.TFrame")
         data_panel.grid(row=0, column=1, sticky="nsew")
         data_panel.columnconfigure(0, weight=1)
         data_panel.rowconfigure(2, weight=1)
 
-        ttk.Label(data_panel, text=f"DATA NODE ROUTES (PORT {DEFAULT_DATA_PORT})", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(data_panel, text=f"DATA NODE IPs (ALL PORT {DEFAULT_DATA_PORT})", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Separator(data_panel).grid(row=1, column=0, sticky="ew", pady=(10, 14))
         self.data_inputs_frame = ttk.Frame(data_panel, style="Panel2.TFrame")
         self.data_inputs_frame.grid(row=2, column=0, sticky="nsew")
@@ -420,13 +451,6 @@ class DocNodeApp:
         footer.grid(row=3, column=0, sticky="ew", pady=(14, 0))
         footer.columnconfigure(0, weight=1)
         ttk.Button(footer, text="START DOC NODE", style="Accent.TButton", command=self.start_node).grid(row=0, column=1)
-
-    def _entry_row(self, parent, row, label, value):
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=7, padx=(0, 10))
-        entry = ttk.Entry(parent)
-        entry.insert(0, value)
-        entry.grid(row=row, column=1, sticky="ew", pady=7)
-        return entry
 
     def _info_row(self, parent, row, label, value):
         ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=7, padx=(0, 10))
@@ -466,19 +490,15 @@ class DocNodeApp:
         )
         header.grid(row=0, column=0, sticky="ew")
 
-        shell = ttk.Frame(self.review_frame, padding=18, style="TFrame")
+        shell = ttk.Frame(self.review_frame, padding=14, style="TFrame")
         shell.grid(row=1, column=0, sticky="nsew")
-        shell.columnconfigure(0, weight=3)
-        shell.columnconfigure(1, weight=2)
+        shell.columnconfigure(0, weight=3, minsize=420)
+        shell.columnconfigure(1, weight=2, minsize=260)
         shell.rowconfigure(0, weight=1)
 
-        case_panel = make_panel(shell, padding=18, style="Panel2.TFrame")
-        case_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 14))
+        case_container, case_panel = make_scrolled_frame(shell, padding=16, style="Panel2.TFrame")
+        case_container.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         case_panel.columnconfigure(1, weight=1)
-        case_panel.rowconfigure(3, weight=1)
-        case_panel.rowconfigure(4, weight=1)
-        case_panel.rowconfigure(6, weight=1)
-        case_panel.rowconfigure(7, weight=1)
 
         top = ttk.Frame(case_panel, style="Panel2.TFrame")
         top.grid(row=0, column=0, columnspan=2, sticky="ew")
@@ -491,16 +511,15 @@ class DocNodeApp:
         row = 2
         for key, label in FORM_KEYS:
             ttk.Label(case_panel, text=label, style="Panel2.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=5)
-            text = tk.Text(case_panel, height=2 if key in {"name", "disease", "date"} else 4, wrap="word")
-            style_text_widget(text, readonly=True)
-            text.grid(row=row, column=1, sticky="nsew", pady=5)
+            height = 2 if key in {"name", "disease", "date"} else 3
+            container, text = make_scrolled_text(case_panel, height=height, readonly=True)
+            container.grid(row=row, column=1, sticky="nsew", pady=5)
             self.field_widgets[key] = text
             row += 1
 
         ttk.Label(case_panel, text="Doctor Note", style="Panel2.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=5)
-        self.note = tk.Text(case_panel, height=4, wrap="word")
-        style_text_widget(self.note)
-        self.note.grid(row=row, column=1, sticky="nsew", pady=5)
+        note_container, self.note = make_scrolled_text(case_panel, height=4)
+        note_container.grid(row=row, column=1, sticky="nsew", pady=5)
 
         action_bar = ttk.Frame(case_panel, style="Panel2.TFrame")
         action_bar.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
@@ -510,10 +529,10 @@ class DocNodeApp:
         self.approve_button = ttk.Button(action_bar, text="YES / APPROVE", style="Success.TButton", command=lambda: self.decide(True), state="disabled")
         self.approve_button.grid(row=0, column=2)
 
-        side = make_panel(shell, padding=18)
+        side = make_panel(shell, padding=16)
         side.grid(row=0, column=1, sticky="nsew")
         side.columnconfigure(0, weight=1)
-        side.rowconfigure(5, weight=1)
+        side.rowconfigure(6, weight=1)
 
         ttk.Label(side, text="NODE STATE", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Separator(side).grid(row=1, column=0, sticky="ew", pady=(10, 14))
@@ -523,11 +542,8 @@ class DocNodeApp:
         self._metric(side, 4, "DATA ROUTES", "0", "routes")
 
         ttk.Label(side, text="EVENT LOG", style="PanelAccent.TLabel").grid(row=5, column=0, sticky="sw", pady=(18, 8))
-        self.log_box = tk.Text(side, height=18, wrap="word")
-        style_text_widget(self.log_box, readonly=True)
-        self.log_box.configure(font=("Consolas", 9))
-        self.log_box.grid(row=6, column=0, sticky="nsew")
-        side.rowconfigure(6, weight=1)
+        log_container, self.log_box = make_scrolled_text(side, height=16, readonly=True, font=("Consolas", 9))
+        log_container.grid(row=6, column=0, sticky="nsew")
 
         bottom = ttk.Frame(side, style="Panel.TFrame")
         bottom.grid(row=7, column=0, sticky="ew", pady=(12, 0))
@@ -595,7 +611,6 @@ class DocNodeApp:
         self.approve_button.configure(state="disabled")
         self.reject_button.configure(state="disabled")
         self.review_status.configure(text="COMMITTING DECISION", foreground=status_color("warn"))
-
         threading.Thread(target=self._decision_worker, args=(pending, approved, note), daemon=True).start()
 
     def _decision_worker(self, pending, approved, note):

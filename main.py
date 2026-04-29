@@ -6,9 +6,15 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 
-PYTHON_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "Files", "Python")
-if PYTHON_DIR not in sys.path:
-    sys.path.insert(0, PYTHON_DIR)
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+MODULE_DIRS = [
+    os.path.join(PROJECT_ROOT, "Files"),
+    os.path.join(PROJECT_ROOT, "Files", "Python"),
+]
+
+for module_dir in MODULE_DIRS:
+    if os.path.isdir(module_dir) and module_dir not in sys.path:
+        sys.path.insert(0, module_dir)
 
 
 def show_menu():

@@ -13,6 +13,7 @@ from Gui_Theme import (
     append_log,
     install_dark_theme,
     make_panel,
+    make_scrolled_text,
     set_text_value,
     status_color,
     style_text_widget,
@@ -30,7 +31,7 @@ from Protocol import (
 )
 
 PYTHON_DIR = os.path.dirname(os.path.abspath(__file__))
-PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, "..", ".."))
+PROJECT_ROOT = os.path.abspath(os.path.join(PYTHON_DIR, ".."))
 
 DEFAULT_DOC_PORT = DOC_NODE_PORT
 DEFAULT_DATA_PORT = DATA_NODE_PORT
@@ -375,7 +376,7 @@ class DocNodeApp:
         header = BlockchainHeader(
             self.config_frame,
             "FERROFY DOC NODE",
-            f"LOCAL IP {get_local_ip()}  /  USER PORT {DEFAULT_DOC_PORT}  /  DATA PORT {DEFAULT_DATA_PORT}",
+            f"LOCAL IP {get_local_ip()}  /  ALL NODES USE PORT {DEFAULT_DOC_PORT}",
         )
         header.grid(row=0, column=0, sticky="ew")
 
@@ -403,13 +404,14 @@ class DocNodeApp:
         self.data_count.insert(0, "1")
         self.data_count.pack(side="left")
         ttk.Button(count_row, text="BUILD", command=self.build_data_inputs).pack(side="left", padx=8)
+        ttk.Label(network, text="(Each On Port 5000)", style="PanelMuted.TLabel").grid(row=6, column=1, sticky="w", pady=2)
 
         data_panel = make_panel(shell, padding=18, style="Panel2.TFrame")
         data_panel.grid(row=0, column=1, sticky="nsew")
         data_panel.columnconfigure(0, weight=1)
         data_panel.rowconfigure(2, weight=1)
 
-        ttk.Label(data_panel, text=f"DATA NODE ROUTES (PORT {DEFAULT_DATA_PORT})", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(data_panel, text=f"DATA NODE IPs  (ALL PORT {DEFAULT_DATA_PORT})", style="PanelAccent.TLabel").grid(row=0, column=0, sticky="w")
         ttk.Separator(data_panel).grid(row=1, column=0, sticky="ew", pady=(10, 14))
         self.data_inputs_frame = ttk.Frame(data_panel, style="Panel2.TFrame")
         self.data_inputs_frame.grid(row=2, column=0, sticky="nsew")
@@ -491,16 +493,15 @@ class DocNodeApp:
         row = 2
         for key, label in FORM_KEYS:
             ttk.Label(case_panel, text=label, style="Panel2.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=5)
-            text = tk.Text(case_panel, height=2 if key in {"name", "disease", "date"} else 4, wrap="word")
-            style_text_widget(text, readonly=True)
-            text.grid(row=row, column=1, sticky="nsew", pady=5)
+            h = 2 if key in {"name", "disease", "date"} else 3
+            container, text = make_scrolled_text(case_panel, height=h, readonly=True)
+            container.grid(row=row, column=1, sticky="nsew", pady=5)
             self.field_widgets[key] = text
             row += 1
 
         ttk.Label(case_panel, text="Doctor Note", style="Panel2.TLabel").grid(row=row, column=0, sticky="nw", padx=(0, 14), pady=5)
-        self.note = tk.Text(case_panel, height=4, wrap="word")
-        style_text_widget(self.note)
-        self.note.grid(row=row, column=1, sticky="nsew", pady=5)
+        note_container, self.note = make_scrolled_text(case_panel, height=4)
+        note_container.grid(row=row, column=1, sticky="nsew", pady=5)
 
         action_bar = ttk.Frame(case_panel, style="Panel2.TFrame")
         action_bar.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
@@ -523,10 +524,8 @@ class DocNodeApp:
         self._metric(side, 4, "DATA ROUTES", "0", "routes")
 
         ttk.Label(side, text="EVENT LOG", style="PanelAccent.TLabel").grid(row=5, column=0, sticky="sw", pady=(18, 8))
-        self.log_box = tk.Text(side, height=18, wrap="word")
-        style_text_widget(self.log_box, readonly=True)
-        self.log_box.configure(font=("Consolas", 9))
-        self.log_box.grid(row=6, column=0, sticky="nsew")
+        log_container, self.log_box = make_scrolled_text(side, height=18, readonly=True, font=("Consolas", 9))
+        log_container.grid(row=6, column=0, sticky="nsew")
         side.rowconfigure(6, weight=1)
 
         bottom = ttk.Frame(side, style="Panel.TFrame")

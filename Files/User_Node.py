@@ -10,6 +10,7 @@ from Gui_Theme import (
     append_log,
     install_dark_theme,
     make_panel,
+    make_scrolled_text,
     status_color,
     style_text_widget,
 )
@@ -115,10 +116,8 @@ class UserNodeApp:
         self.stop_button.grid(row=7, column=0, sticky="ew")
 
         ttk.Label(left, text="TRANSMISSION LOG", style="PanelAccent.TLabel").grid(row=8, column=0, sticky="w", pady=(22, 8))
-        self.log_box = tk.Text(left, height=13, wrap="word")
-        style_text_widget(self.log_box, readonly=True)
-        self.log_box.configure(font=("Consolas", 9))
-        self.log_box.grid(row=9, column=0, sticky="nsew")
+        log_container, self.log_box = make_scrolled_text(left, height=13, readonly=True, font=("Consolas", 9))
+        log_container.grid(row=9, column=0, sticky="nsew")
         left.rowconfigure(9, weight=1)
 
         form = make_panel(shell, padding=18, style="Panel2.TFrame")
@@ -139,9 +138,9 @@ class UserNodeApp:
                 widget = ttk.Entry(form)
                 widget.grid(row=row, column=1, sticky="ew", pady=6)
             else:
-                widget = tk.Text(form, height=5 if kind == "text_long" else 3, wrap="word")
-                style_text_widget(widget)
-                widget.grid(row=row, column=1, sticky="nsew", pady=6)
+                h = 5 if kind == "text_long" else 3
+                container, widget = make_scrolled_text(form, height=h)
+                container.grid(row=row, column=1, sticky="nsew", pady=6)
             self.inputs[key] = widget
             row += 1
 

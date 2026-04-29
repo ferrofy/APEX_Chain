@@ -184,3 +184,32 @@ def status_color(kind):
         "error": COLORS["danger"],
         "info": COLORS["accent"],
     }.get(kind, COLORS["muted"])
+
+
+def make_scrolled_text(master, height=4, readonly=False, font=None, **kwargs):
+    container = tk.Frame(master, bg=COLORS["input_border"], bd=0, highlightthickness=0)
+    container.columnconfigure(0, weight=1)
+    container.rowconfigure(0, weight=1)
+
+    scrollbar = tk.Scrollbar(container, orient="vertical", bg=COLORS["panel_3"],
+                              troughcolor=COLORS["bg"], activebackground=COLORS["accent"],
+                              highlightthickness=0, bd=0, width=10, relief="flat")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
+    text = tk.Text(
+        container,
+        height=height,
+        wrap="word",
+        yscrollcommand=scrollbar.set,
+        **kwargs,
+    )
+    scrollbar.configure(command=text.yview)
+    text.grid(row=0, column=0, sticky="nsew")
+
+    style_text_widget(text, readonly=readonly)
+    if font:
+        text.configure(font=font)
+
+    container._text_widget = text
+    return container, text
+

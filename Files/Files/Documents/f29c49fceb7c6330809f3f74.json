@@ -1,0 +1,20 @@
+{
+  "approved_at": "2026-04-29T00:35:42Z",
+  "content_hash": "4488ed6baf4e0cc96729b22bb06efe5d98680dbc4de48337bded2a016f1e0d24",
+  "doc_id": "f29c49fceb7c6330809f3f74",
+  "doc_node": "doc:10.73.242.9:5000",
+  "doctor_note": "Tut dywsdlbkszh dbs",
+  "fields": {
+    "date": "2026-04-29",
+    "disease": "Dis",
+    "extra_notes": "Extra",
+    "name": "VPX",
+    "problem": "Test P",
+    "solution": "Sol",
+    "symptoms": "Test Sys"
+  },
+  "received_sent_at": "2026-04-29T00:35:09Z",
+  "source_user_ip": "10.73.242.25",
+  "source_user_node": "user:10.73.242.25",
+  "status": "approved_by_doc_node"
+}

@@ -4,12 +4,14 @@ import time
 import tkinter as tk
 from tkinter import messagebox, ttk
 
+from Blockchain import INITIAL_WALLET_BALANCE, canonical_json, sha256_text, token_cost_for_fields
 from Gui_Theme import (
     BlockchainHeader,
     COLORS,
     append_log,
     install_dark_theme,
     make_panel,
+    make_scrolled_frame,
     make_scrolled_text,
     status_color,
     style_text_widget,
@@ -56,6 +58,7 @@ class UserNodeApp:
         self.stop_event = threading.Event()
         self.worker = None
         self.inputs = {}
+        self.wallet_address = ""
 
         self._build()
 
@@ -94,8 +97,22 @@ class UserNodeApp:
             style="PanelMuted.TLabel",
         ).grid(row=4, column=0, sticky="w", pady=(0, 16))
 
+        ttk.Label(left, text="USER WALLET", style="PanelAccent.TLabel").grid(row=5, column=0, sticky="w", pady=(4, 8))
+        ttk.Label(left, text="Wallet Name", style="Panel.TLabel").grid(row=6, column=0, sticky="w")
+        self.wallet_name = ttk.Entry(left)
+        self.wallet_name.insert(0, f"wallet-{get_local_ip()}")
+        self.wallet_name.grid(row=7, column=0, sticky="ew", pady=(5, 8))
+        ttk.Button(left, text="CREATE WALLET", command=self.create_wallet).grid(row=8, column=0, sticky="ew", pady=(0, 8))
+        self.wallet_info = ttk.Label(
+            left,
+            text=f"Balance starts at {INITIAL_WALLET_BALANCE} tokens",
+            style="PanelMuted.TLabel",
+            wraplength=280,
+        )
+        self.wallet_info.grid(row=9, column=0, sticky="ew", pady=(0, 14))
+
         self.status_bar = tk.Frame(left, bg=COLORS["panel_2"], highlightthickness=1, highlightbackground=COLORS["line"])
-        self.status_bar.grid(row=5, column=0, sticky="ew", pady=(4, 16))
+        self.status_bar.grid(row=10, column=0, sticky="ew", pady=(4, 16))
         self.status_dot = tk.Canvas(self.status_bar, width=18, height=18, highlightthickness=0, bg=COLORS["panel_2"])
         self.status_dot.pack(side="left", padx=(12, 7), pady=12)
         self.status_text = tk.Label(
@@ -110,18 +127,18 @@ class UserNodeApp:
         self._draw_status_dot("info")
 
         self.send_button = ttk.Button(left, text="SEND TO DOC NODE", style="Accent.TButton", command=self.start_send)
-        self.send_button.grid(row=6, column=0, sticky="ew", pady=(0, 10))
+        self.send_button.grid(row=11, column=0, sticky="ew", pady=(0, 10))
 
         self.stop_button = ttk.Button(left, text="STOP RETRY", command=self.stop_retry, state="disabled")
-        self.stop_button.grid(row=7, column=0, sticky="ew")
+        self.stop_button.grid(row=12, column=0, sticky="ew")
 
-        ttk.Label(left, text="TRANSMISSION LOG", style="PanelAccent.TLabel").grid(row=8, column=0, sticky="w", pady=(22, 8))
+        ttk.Label(left, text="TRANSMISSION LOG", style="PanelAccent.TLabel").grid(row=13, column=0, sticky="w", pady=(22, 8))
         log_container, self.log_box = make_scrolled_text(left, height=13, readonly=True, font=("Consolas", 9))
-        log_container.grid(row=9, column=0, sticky="nsew")
-        left.rowconfigure(9, weight=1)
+        log_container.grid(row=14, column=0, sticky="nsew")
+        left.rowconfigure(14, weight=1)
 
-        form = make_panel(shell, padding=18, style="Panel2.TFrame")
-        form.grid(row=0, column=1, sticky="nsew")
+        form_container, form = make_scrolled_frame(shell, padding=18, style="Panel2.TFrame")
+        form_container.grid(row=0, column=1, sticky="nsew")
         form.columnconfigure(1, weight=1)
         form.rowconfigure(2, weight=1)
         form.rowconfigure(3, weight=1)
@@ -159,6 +176,16 @@ class UserNodeApp:
             data[key] = value
         return data
 
+    def create_wallet(self):
+        wallet_name = self.wallet_name.get().strip() or f"wallet-{get_local_ip()}"
+        seed = canonical_json({"wallet_name": wallet_name, "user_node": f"user:{get_local_ip()}"})
+        self.wallet_address = sha256_text(seed)
+        self.wallet_info.configure(
+            text=f"{self.wallet_address[:18]}...  /  {INITIAL_WALLET_BALANCE} starting tokens"
+        )
+        self.log(f"Wallet ready: {self.wallet_address[:24]}...")
+        return self.wallet_address
+
     def start_send(self):
         if self.worker and self.worker.is_alive():
             return
@@ -167,6 +194,12 @@ class UserNodeApp:
         if not form_data["name"] or not form_data["problem"]:
             messagebox.showwarning("Missing Data", "Name and Problem are required.")
             return
+
+        wallet_address = self.wallet_address or self.create_wallet()
+        token_cost = token_cost_for_fields(form_data)
+        form_data["wallet_name"] = self.wallet_name.get().strip()
+        form_data["wallet_address"] = wallet_address
+        form_data["token_cost"] = token_cost
 
         try:
             doc_host, doc_port = parse_fixed_endpoint(self.doc_ip.get().strip(), DEFAULT_DOC_PORT, "Doc Node")
@@ -178,7 +211,7 @@ class UserNodeApp:
         self.send_button.configure(state="disabled")
         self.stop_button.configure(state="normal")
         self.set_status("Connecting to Doc Node.", "warn")
-        self.log(f"Queueing request for {doc_host}:{doc_port}")
+        self.log(f"Queueing request for {doc_host}:{doc_port} / cost {token_cost} token(s)")
 
         self.worker = threading.Thread(
             target=self._send_loop,
@@ -199,11 +232,15 @@ class UserNodeApp:
             try:
                 response = send_user_data(doc_host, doc_port, form_data)
                 if response and response.get("ok"):
+                    wallet_balance = response.get("wallet_balance")
                     self.set_status(
-                        f"Approved. Doc {response.get('doc_id')} / Block {response.get('block_index')}",
+                        f"Approved. Block {response.get('block_index')} / Balance {wallet_balance}",
                         "ok",
                     )
-                    self.log(f"Approved by Doc Node. Block hash {str(response.get('block_hash'))[:32]}...")
+                    self.log(
+                        f"Approved by Doc Node. Block hash {str(response.get('block_hash'))[:32]}..."
+                        f" Balance {wallet_balance}"
+                    )
                 else:
                     error = response.get("error", "request rejected") if response else "no response"
                     self.set_status(f"Rejected: {error}", "error")

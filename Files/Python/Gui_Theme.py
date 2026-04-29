@@ -140,6 +140,43 @@ def make_panel(master, padding=16, style="Panel.TFrame"):
     return frame
 
 
+def make_scrolled_frame(master, padding=16, style="Panel2.TFrame"):
+    bg = COLORS["panel_2"] if style == "Panel2.TFrame" else COLORS["panel"]
+    outer = ttk.Frame(master, style=style)
+    outer.columnconfigure(0, weight=1)
+    outer.rowconfigure(0, weight=1)
+
+    canvas = tk.Canvas(outer, bg=bg, highlightthickness=0, bd=0)
+    scrollbar = tk.Scrollbar(
+        outer,
+        orient="vertical",
+        command=canvas.yview,
+        bg=COLORS["panel_3"],
+        troughcolor=COLORS["bg"],
+        activebackground=COLORS["accent"],
+        highlightthickness=0,
+        bd=0,
+        width=10,
+        relief="flat",
+    )
+    canvas.configure(yscrollcommand=scrollbar.set)
+    canvas.grid(row=0, column=0, sticky="nsew")
+    scrollbar.grid(row=0, column=1, sticky="ns")
+
+    inner = ttk.Frame(canvas, padding=padding, style=style)
+    window_id = canvas.create_window((0, 0), window=inner, anchor="nw")
+
+    def update_scroll_region(_event=None):
+        canvas.configure(scrollregion=canvas.bbox("all"))
+
+    def stretch_inner(event):
+        canvas.itemconfigure(window_id, width=event.width)
+
+    inner.bind("<Configure>", update_scroll_region)
+    canvas.bind("<Configure>", stretch_inner)
+    return outer, inner
+
+
 def style_text_widget(widget, readonly=False, height=None):
     widget.configure(
         bg=COLORS["input"],

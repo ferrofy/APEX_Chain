@@ -1,0 +1,20 @@
+{
+  "approved_at": "2026-04-29T00:38:04Z",
+  "content_hash": "8d623d9018300938f780508f9ba512dc13756485e6996bacd63416c0f8c8336f",
+  "doc_id": "395798435fe5598844c8ec5a",
+  "doc_node": "doc:10.73.242.9:5000",
+  "doctor_note": "",
+  "fields": {
+    "date": "2026-04-29",
+    "disease": "DIs",
+    "extra_notes": "Extra",
+    "name": "VPX",
+    "problem": "Prob",
+    "solution": "Solu",
+    "symptoms": "Sys"
+  },
+  "received_sent_at": "2026-04-29T00:37:41Z",
+  "source_user_ip": "10.73.242.25",
+  "source_user_node": "user:10.73.242.25",
+  "status": "approved_by_doc_node"
+}

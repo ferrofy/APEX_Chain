@@ -21,6 +21,7 @@ three-node architecture.
 
 The User Node asks for:
 
+- Wallet Name
 - Name
 - Problem
 - Symptoms
@@ -66,7 +67,7 @@ It asks:
 ```text
 How many Data Node peers to connect [0] >
 Data Node peer 1 IP / host [port 5001] >
-Block folder [Blocks/DataNode_5001] >
+Block folder [Blocks] >
 ```
 
 For another Data Node on another machine, use that machine's WiFi IP. The port
@@ -75,7 +76,7 @@ stays `5001`.
 ```text
 How many Data Node peers to connect [0] > 1
 Data Node peer 1 IP / host [port 5001] > 192.168.1.25
-Block folder [Blocks/DataNode_5001] >
+Block folder [Blocks] >
 ```
 
 ## 2. Start Doc Node
@@ -110,41 +111,73 @@ pythonw Files/Python/User_Node.pyw
 
 or run `python main.py` and choose `1`.
 
-The User Node asks only for:
+The User Node asks for:
 
 ```text
 Doc Node IP / Host
+Wallet Name
 ```
 
-Fill the data fields and click `Send To Doc Node`. If the Doc Node is not
-online yet, the User Node retries automatically every few seconds until it
-connects or you click `Stop Retry`.
+Click `Create Wallet` or send directly to auto-create one. Each wallet starts
+with `1000000` tokens. User-entered words cost `1` token each; Doctor Notes do
+not cost tokens.
 
 ## Blockchain Behavior
 
-Data Nodes do not mine and do not use nonce values. A block is simply:
+Data Nodes keep custom medical blocks in the `Blocks` folder:
+
+```text
+Blocks/Block_1.json
+Blocks/Block_2.json
+Blocks/Block_3.json
+```
+
+A block stays open for `100` seconds and can hold up to `150` patient messages.
+If the latest block is still open, new approved records are appended to that
+block. If it is older than `100` seconds or already has `150` messages, the Data
+Node mines the next block.
+
+Each block uses this format:
 
 ```json
 {
-  "schema": "ferrofy.localwifi.block.v1",
-  "index": 1,
-  "timestamp": "2026-04-28T16:30:00Z",
-  "previous_hash": "abc123...",
-  "creator": "doc:192.168.1.10:5000",
-  "data": {
-    "kind": "approved_doc_record",
-    "doc_id": "...",
-    "document": {}
-  },
-  "hash": "sha256-of-the-block"
+  "Block No": 1,
+  "Timestamp": 1777398000,
+  "Miner/Data Node": "data:192.168.1.20:5001",
+  "Message": [
+    {
+      "Patient Name": "sha256(patient-name)",
+      "Problem": "text",
+      "Symptoms": "text",
+      "Disease": "text",
+      "Solution": "text",
+      "Timestamp": 1777398000,
+      "Extra Notes": "text",
+      "Doctor Notes": "text",
+      "Doc Node IP": "sha512(doc-node-ip)",
+      "Balance Change": {
+        "From User": "sha256(user-wallet)",
+        "To Data Node": "sha512(data-node)",
+        "Balance Transferred": 12
+      }
+    }
+  ],
+  "Prev Hash": "previous-block-hash",
+  "Hash": "sha256-of-this-block"
 }
 ```
+
+The Doc Node signs approved documents before forwarding them, but the signature
+is kept only in the audit document and is not written into the blockchain block.
+The Doc Node also randomizes the connected Data Node list and gives the record
+to one randomly selected reachable Data Node first.
 
 Each Data Node checks:
 
 - block hash matches the block contents
-- block index is sequential
-- `previous_hash` matches the previous block
+- block number is sequential
+- `Prev Hash` matches the previous block
+- wallet balance has enough tokens for the user-entered words
 - peer Data Nodes have the same chain
 
 If a Data Node finds a bad or different block, it asks connected Data Nodes for
